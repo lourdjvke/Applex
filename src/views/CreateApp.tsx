@@ -200,6 +200,12 @@ export default function CreateApp() {
                >
                  <Video size={18} /> Video / Image
                </button>
+               <button 
+                 onClick={() => setMethod('manual')}
+                 className={cn("flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all", method === 'manual' ? "bg-primary text-white shadow-md shadow-primary/20" : "text-text-secondary hover:bg-surface-alt")}
+               >
+                 <FileCode size={18} /> Manual Code
+               </button>
             </div>
 
             {method === 'manual' ? (
