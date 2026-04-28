@@ -1,14 +1,51 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Home, Users, PlusSquare, Layout as StudioIcon, User as UserIcon, Bell, Search, LogOut } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { cn } from '../lib/utils';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { profile, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [swUpdateActive, setSwUpdateActive] = useState<{ version: string } | null>(null);
+  const [justReconnected, setJustReconnected] = useState(false);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setOffline(false);
+      setJustReconnected(true);
+      setTimeout(() => setJustReconnected(false), 3000);
+    };
+    const handleOffline = () => setOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'UPDATE_AVAILABLE') {
+        setSwUpdateActive({ version: event.data.version });
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+    };
+  }, []);
+
+  const handleUpdateSW = () => {
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
+    }
+    setTimeout(() => {
+      window.location.reload();
+    }, 500);
+  };
 
   const unreadCount = Object.values(profile?.notifications || {}).filter((n: any) => !n.isRead).length;
 
@@ -21,6 +58,44 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-bg overflow-hidden flex-col md:flex-row">
+      <AnimatePresence>
+        {offline && (
+          <motion.div 
+            initial={{ height: 0 }} 
+            animate={{ height: 4 }} 
+            exit={{ height: 0 }} 
+            className="w-full bg-accent absolute top-0 left-0 z-50 origin-top"
+          />
+        )}
+        {justReconnected && !offline && (
+           <motion.div 
+            initial={{ height: 4, backgroundColor: '#2A7A4B' }} 
+            animate={{ height: 0, opacity: 0 }} 
+            transition={{ duration: 1, delay: 2 }}
+            className="w-full absolute top-0 left-0 z-50 origin-top bg-installed"
+          />
+        )}
+      </AnimatePresence>
+      
+      <AnimatePresence>
+        {swUpdateActive && (
+          <motion.div
+            initial={{ y: -50, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -50, opacity: 0 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] bg-surface border border-border shadow-2xl rounded-full px-4 py-2 flex items-center gap-4"
+          >
+            <span className="text-sm font-semibold">Update available — AIPLEX v{swUpdateActive.version}</span>
+            <button 
+              onClick={handleUpdateSW}
+              className="bg-primary text-white px-4 py-1.5 rounded-full text-xs font-bold hover:bg-primary-dim transition-colors"
+            >
+              Update Now
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex w-64 border-r border-border bg-surface flex-col p-6 h-full shrink-0">
         <div className="mb-8">

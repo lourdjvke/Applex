@@ -3,9 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { dbGet, dbUpdate } from '../lib/firebase';
 import { UserProfile, MiniApp } from '../types';
 import { useAuth } from '../lib/AuthContext';
-import { Edit3, Settings, Shield, Package, LayoutGrid, Star, LogOut, CheckCircle2 } from 'lucide-react';
+import { Edit3, Settings, Shield, Package, LayoutGrid, Star, LogOut, CheckCircle2, X } from 'lucide-react';
 import AppCard from '../components/AppCard';
 import { cn } from '../lib/utils';
+import { AnimatePresence, motion } from 'motion/react';
 
 export default function Profile() {
   const { uid } = useParams<{ uid: string }>();
@@ -14,6 +15,9 @@ export default function Profile() {
   const [apps, setApps] = useState<MiniApp[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'installed' | 'created'>('installed');
+  const [showSettings, setShowSettings] = useState(false);
+  const [swVersion, setSwVersion] = useState<string>('Checking...');
+  const [swStatus, setSwStatus] = useState<string>('Checking...');
   const navigate = useNavigate();
 
   const isOwnProfile = !uid || uid === user?.uid;
@@ -46,12 +50,87 @@ export default function Profile() {
     }
     fetchData();
   }, [uid, user, activeTab, isOwnProfile]);
+  
+  useEffect(() => {
+    if (showSettings) {
+      checkSwVersion();
+    }
+  }, [showSettings]);
+
+  const checkSwVersion = async () => {
+    setSwStatus('Checking...');
+    try {
+      const res = await fetch('https://gemmai-default-rtdb.firebaseio.com/config/sw_version.json');
+      if (res.ok) {
+        const remoteVersion = await res.json();
+        if (navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: 'CHECK_VERSION' });
+        }
+        if (remoteVersion) {
+          setSwVersion(`Latest: v${remoteVersion}`);
+          setSwStatus("Up to date \u2713 (If no banner appeared)");
+        } else {
+           setSwVersion("Latest: Unknown");
+           setSwStatus("Up to date \u2713");
+        }
+      }
+    } catch {
+      setSwStatus('Offline');
+    }
+  };
+
+  const clearAppCache = () => {
+    caches.delete('aiplex-apps-v1').then(() => {
+      alert('App cache cleared. Shell cache preserved.');
+    });
+  };
 
   if (loading) return <div className="p-20 text-center">Loading profile...</div>;
   if (!profile) return <div className="p-20 text-center">User not found</div>;
 
   return (
-    <div className="pb-24 grow">
+    <div className="pb-24 grow relative">
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
+              className="bg-surface border border-border rounded-3xl w-[400px] shadow-2xl overflow-hidden flex flex-col"
+            >
+              <div className="flex justify-between items-center p-4 border-b border-border">
+                <h3 className="font-display font-bold text-lg">Settings</h3>
+                <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-surface-alt rounded-full">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div>
+                  <h4 className="text-sm font-bold mb-2">Cache & Updates</h4>
+                  <div className="bg-surface-alt p-4 rounded-xl space-y-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-text-secondary">Status</span>
+                      <span className="font-bold">{swStatus}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-text-secondary">Version</span>
+                      <span className="font-mono">{swVersion}</span>
+                    </div>
+                    <div className="flex gap-2 pt-2">
+                       <button onClick={checkSwVersion} className="flex-1 py-1.5 border border-border bg-surface rounded-lg text-xs font-bold hover:bg-surface-alt">Check for Updates</button>
+                       <button onClick={clearAppCache} className="flex-1 py-1.5 border border-primary/20 bg-primary/10 text-primary rounded-lg text-xs font-bold hover:bg-primary/20">Clear App Cache</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Profile Header */}
       <div className="relative mb-20 grow">
         <div className="h-40 bg-surface-alt border-b border-border rounded-b-[40px] grow"></div>
@@ -75,7 +154,7 @@ export default function Profile() {
         </div>
         {isOwnProfile && (
            <div className="absolute bottom-4 right-8 flex gap-3">
-              <button className="p-3 bg-surface border border-border rounded-xl text-text-secondary hover:text-primary transition-all shadow-sm">
+              <button onClick={() => setShowSettings(true)} className="p-3 bg-surface border border-border rounded-xl text-text-secondary hover:text-primary transition-all shadow-sm">
                  <Settings size={20} />
               </button>
               <button 

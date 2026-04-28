@@ -36,9 +36,21 @@ export default function Product() {
     fetchData();
   }, [id, profile]);
 
+  const cacheAppData = async () => {
+    if (!app || !id) return;
+    try {
+      const cache = await caches.open('aiplex-apps-v1');
+      const blob = new Blob([JSON.stringify(app)], { type: 'application/json' });
+      await cache.put(`/api/local-app/${id}`, new Response(blob));
+    } catch (err) {
+      console.error("Failed to cache app:", err);
+    }
+  };
+
   const handleInstall = async () => {
     if (!id || !user || !app) return;
     setInstalling(true);
+    await cacheAppData();
     setTimeout(async () => {
       await dbUpdate(`users/${user.uid}/profile/installedApps`, { [id]: { version: app.meta.version } });
       await dbUpdate(`apps/${id}/stats`, { 
@@ -53,6 +65,7 @@ export default function Product() {
   const handleUpdate = async () => {
     if (!id || !user || !app) return;
     setInstalling(true);
+    await cacheAppData();
     setTimeout(async () => {
       await dbUpdate(`users/${user.uid}/profile/installedApps/${id}`, { version: app.meta.version });
       setIsInstalled(true);

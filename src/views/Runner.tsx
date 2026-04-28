@@ -19,20 +19,40 @@ export default function Runner() {
     async function fetchData() {
       if (!id) return;
       try {
-        const appData = await dbGet<MiniApp>(`apps/${id}`);
-        if (appData) {
-          setApp(appData);
-          // Cache for offline
-          localStorage.setItem(`offline_app_${id}`, JSON.stringify(appData));
-        } else {
-          // Try local cache
-          const cached = localStorage.getItem(`offline_app_${id}`);
-          if (cached) setApp(JSON.parse(cached));
+        let appData: MiniApp | null = null;
+        
+        // Network-first for DB
+        if (navigator.onLine) {
+           appData = await dbGet<MiniApp>(`apps/${id}`);
+           if (appData) {
+             setApp(appData);
+             // Update cache opportunistically
+             const cache = await caches.open('aiplex-apps-v1');
+             await cache.put(`/api/local-app/${id}`, new Response(JSON.stringify(appData)));
+           }
+        }
+        
+        if (!appData) {
+          // Fallback to cache
+          try {
+             const res = await fetch(`/api/local-app/${id}`);
+             if (res.ok) {
+               appData = await res.json();
+               if (appData) setApp(appData);
+             }
+          } catch (e) {
+             console.warn("No cache available", e);
+          }
         }
       } catch (err) {
         console.error("Fetch failed, trying cache", err);
-        const cached = localStorage.getItem(`offline_app_${id}`);
-        if (cached) setApp(JSON.parse(cached));
+        try {
+           const res = await fetch(`/api/local-app/${id}`);
+           if (res.ok) {
+             const appData = await res.json();
+             if (appData) setApp(appData);
+           }
+        } catch (e) {}
       }
       setLoading(false);
     }
