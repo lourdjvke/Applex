@@ -200,6 +200,34 @@ export async function analyzeVideoOrImage(base64Data: string, mimeType: string) 
   }
 }
 
+export async function analyzeCodeForMetadata(code: string) {
+  const prompt = `
+    Analyze this HTML/JS/CSS code for a mini-app and provide suitable metadata for it.
+    Code:
+    ---
+    ${code}
+    ---
+    Return a JSON object: { 
+      "name": "Short catchy name", 
+      "tagline": "A one sentence summary",
+      "description": "A full paragraph describing what the app does and its features.",
+      "category": "Utility" // choose from: Utility, Game, Productivity, Education, Social
+    }
+  `;
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt
+  });
+
+  const text = (response.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Failed to parse Gemini response as JSON", text);
+    return null;
+  }
+}
 export async function generateAppIcon(appName: string, appDescription: string) {
   const prompt = `Create a simple, flat SVG icon for an app called "${appName}" that "${appDescription}". The icon should be 100x100, minimalist, and use professional colors. Return ONLY the SVG code.`;
 

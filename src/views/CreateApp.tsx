@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Wand2, Type, Video, ImageIcon, Sparkles, Check, ChevronRight, Rocket, RefreshCcw, FileVideo } from 'lucide-react';
-import { generateMiniApp, analyzeVideoOrImage, analyzeNativeVideo, generateAppIcon } from '../lib/gemini';
+import { Wand2, Type, Video, ImageIcon, Sparkles, Check, ChevronRight, Rocket, RefreshCcw, FileVideo, FileCode } from 'lucide-react';
+import { generateMiniApp, analyzeVideoOrImage, analyzeNativeVideo, generateAppIcon, analyzeCodeForMetadata } from '../lib/gemini';
 import { dbPush, dbSet, dbUpdate } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { fileToBase64, generateId } from '../lib/utils';
@@ -12,7 +12,7 @@ type Step = 'describe' | 'generate' | 'publish';
 
 export default function CreateApp() {
   const [step, setStep] = useState<Step>('describe');
-  const [method, setMethod] = useState<'text' | 'media'>('text');
+  const [method, setMethod] = useState<'text' | 'media' | 'manual'>('text');
   const [prompt, setPrompt] = useState('');
   const [context, setContext] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -58,7 +58,11 @@ export default function CreateApp() {
   };
 
   const handleGenerate = async () => {
-    if (!prompt || !user) return;
+    if ((method !== 'manual' && !prompt) || !user) return;
+    if (method === 'manual' && (!appCode || !appName)) {
+        alert('Please provide code and a name');
+        return;
+    }
     setGenerating(true);
     setStep('generate');
 
@@ -67,53 +71,66 @@ export default function CreateApp() {
       id: draftId,
       meta: {
         name: appName || "AI Draft App",
-        tagline: "Generating...",
-        description: prompt,
+        tagline: appTagline || "Generating...",
+        description: prompt || appDescription || "Manual build",
         category: appCategory,
         tags: ['draft'],
         creatorUid: user.uid,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         version: '0.1.0',
-        iconBase64: 'https://cdn-icons-png.flaticon.com/512/2103/2103633.png',
+        iconBase64: appIcon || 'https://cdn-icons-png.flaticon.com/512/2103/2103633.png',
         screenshotsBase64: [],
         isPublished: false,
         isOfflineReady: false,
       },
       stats: { installs: 0, views: 0, avgRating: 0, reviewCount: 0, installedBy: {} },
-      code: { html: '', sizeBytes: 0 },
+      code: { html: method === 'manual' ? appCode : '', sizeBytes: method === 'manual' ? new Blob([appCode]).size : 0 },
     };
 
     // Save draft immediately
     await dbSet(`apps/${draftId}`, draftData);
 
-    // Fire and forget background generation
-    (async () => {
-      try {
-        const code = await generateMiniApp(prompt, context);
-        const icon = await generateAppIcon(appName || 'My App', prompt);
-        const finalIcon = `data:image/svg+xml;base64,${btoa(icon)}`;
-        
-        const finalName = appName || "AI Generated App";
-        const finalTagline = "A smart mini-app built with AIPLEX AI";
-        const finalDesc = "This app was generated based on your description using Gemini.";
+    // Fire and forget background generation IF NEEDED
+    if (method !== 'manual') {
+      (async () => {
+        try {
+          const code = await generateMiniApp(prompt, context);
+          const generatedSvgPath = await generateAppIcon(appName || 'My App', prompt);
+          const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
+          
+          const finalName = appName || "AI Generated App";
+          const finalTagline = "A smart mini-app built with AIPLEX AI";
+          const finalDesc = "This app was generated based on your description using Gemini.";
 
-        await dbUpdate(`apps/${draftId}`, {
-          'meta/name': finalName,
-          'meta/tagline': finalTagline,
-          'meta/description': finalDesc,
-          'meta/iconBase64': finalIcon,
-          'code/html': code,
-          'code/sizeBytes': new Blob([code]).size,
-          'meta/updatedAt': Date.now()
-        });
-      } catch (err) {
-        console.error('Background generation failed', err);
-        await dbUpdate(`apps/${draftId}`, {
-          'meta/tagline': 'Generation failed. Edit to fix.',
-        });
-      }
-    })();
+          await dbUpdate(`apps/${draftId}`, {
+            'meta/name': finalName,
+            'meta/tagline': finalTagline,
+            'meta/description': finalDesc,
+            'meta/iconBase64': finalIcon,
+            'code/html': code,
+            'code/sizeBytes': new Blob([code]).size,
+            'meta/updatedAt': Date.now()
+          });
+        } catch (err) {
+          console.error('Background generation failed', err);
+          await dbUpdate(`apps/${draftId}`, {
+            'meta/tagline': 'Generation failed. Edit to fix.',
+          });
+        }
+      })();
+    } else {
+       // if manual and no icon, can generate an icon optionally or just leave default
+       if (!appIcon) {
+          (async () => {
+             try {
+                const generatedSvgPath = await generateAppIcon(appName, prompt || appDescription || 'A mini app');
+                const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
+                await dbUpdate(`apps/${draftId}`, { 'meta/iconBase64': finalIcon });
+             } catch (err) { }
+          })();
+       }
+    }
 
     navigate('/studio');
   };
@@ -185,7 +202,81 @@ export default function CreateApp() {
                </button>
             </div>
 
-            {method === 'text' ? (
+            {method === 'manual' ? (
+              <div className="space-y-6">
+                 <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase text-text-muted tracking-widest">Icon (Optional)</label>
+                    <div className="flex items-center gap-4">
+                       <img src={appIcon || 'https://cdn-icons-png.flaticon.com/512/2103/2103633.png'} className="w-16 h-16 rounded-xl border border-border" />
+                       <label className="bg-surface-alt px-4 py-2 rounded-lg text-sm font-bold cursor-pointer hover:bg-border transition-all">
+                          Upload Icon
+                          <input type="file" className="hidden" accept="image/*" onChange={async (e) => {
+                             const file = e.target.files?.[0];
+                             if (file) {
+                                const base64 = await fileToBase64(file);
+                                setAppIcon(base64);
+                             }
+                          }} />
+                       </label>
+                    </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                       <label className="text-xs font-bold uppercase text-text-muted tracking-widest">App Name</label>
+                       <input 
+                         type="text" 
+                         value={appName}
+                         onChange={(e) => setAppName(e.target.value)}
+                         className="w-full h-12 px-4 bg-surface border border-border rounded-xl outline-none focus:border-primary transition-all text-sm"
+                       />
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-xs font-bold uppercase text-text-muted tracking-widest">Category</label>
+                       <select 
+                         value={appCategory}
+                         onChange={(e) => setAppCategory(e.target.value)}
+                         className="w-full h-12 px-4 bg-surface border border-border rounded-xl outline-none focus:border-primary transition-all text-sm"
+                       >
+                         <option>Utility</option>
+                         <option>Game</option>
+                         <option>Productivity</option>
+                         <option>Education</option>
+                       </select>
+                    </div>
+                 </div>
+
+                 <div className="space-y-2">
+                    <div className="flex justify-between items-end">
+                       <label className="text-xs font-bold uppercase text-text-muted tracking-widest">App Code</label>
+                       <button 
+                         onClick={async () => {
+                           if (!appCode) return;
+                           setAnalyzing(true);
+                           const meta = await analyzeCodeForMetadata(appCode);
+                           if (meta) {
+                              if (meta.name) setAppName(meta.name);
+                              if (meta.description) { setAppDescription(meta.description); setPrompt(meta.description); }
+                              if (meta.category) setAppCategory(meta.category);
+                              if (meta.tagline) setAppTagline(meta.tagline);
+                           }
+                           setAnalyzing(false);
+                         }}
+                         disabled={analyzing || !appCode}
+                         className="flex items-center gap-1 text-xs text-primary font-bold hover:text-primary-dim disabled:opacity-50"
+                       >
+                          <Sparkles size={14} /> Auto-fill info using AI
+                       </button>
+                    </div>
+                    <textarea 
+                       value={appCode}
+                       onChange={(e) => setAppCode(e.target.value)}
+                       placeholder="<!DOCTYPE html>..."
+                       className="w-full h-64 bg-slate-900 text-green-400 font-mono text-xs p-4 rounded-xl outline-none focus:ring-2 ring-primary resize-y"
+                    />
+                 </div>
+              </div>
+            ) : method === 'text' ? (
               <div className="space-y-6">
                 <div className="space-y-2">
                   <label className="text-xs font-bold uppercase text-text-muted tracking-widest">Describe your idea</label>
@@ -256,10 +347,10 @@ export default function CreateApp() {
 
             <button 
               onClick={handleGenerate}
-              disabled={!prompt || analyzing}
+              disabled={(!prompt && method !== 'manual') || (method === 'manual' && (!appCode || !appName)) || analyzing}
               className="w-full h-16 bg-primary text-white rounded-2xl font-display font-bold text-lg flex items-center justify-center gap-3 shadow-xl shadow-primary/20 hover:translate-y-[-2px] active:scale-95 transition-all disabled:opacity-50"
             >
-              Generate App <ChevronRight size={20} />
+              {method === 'manual' ? 'Save App' : 'Generate App'} <ChevronRight size={20} />
             </button>
           </motion.div>
         )}
