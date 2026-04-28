@@ -52,7 +52,7 @@ export default function Product() {
     setInstalling(true);
     await cacheAppData();
     setTimeout(async () => {
-      await dbUpdate(`users/${user.uid}/profile/installedApps`, { [id]: { version: app.meta.version } });
+      await dbUpdate(`users/${user.uid}/profile`, { [`installedApps/${id}`]: { version: app.meta.version } });
       await dbUpdate(`apps/${id}/stats`, { 
         installs: (app.stats?.installs || 0) + 1,
         [`installedBy/${user.uid}`]: true
@@ -67,7 +67,7 @@ export default function Product() {
     setInstalling(true);
     await cacheAppData();
     setTimeout(async () => {
-      await dbUpdate(`users/${user.uid}/profile/installedApps/${id}`, { version: app.meta.version });
+      await dbUpdate(`users/${user.uid}/profile`, { [`installedApps/${id}`]: { version: app.meta.version } });
       setIsInstalled(true);
       setInstalling(false);
     }, 1500);

@@ -27,10 +27,20 @@ export default function Profile() {
       const targetUid = uid || user?.uid;
       if (!targetUid) return;
 
-      const p = await dbGet<UserProfile>(`users/${targetUid}/profile`);
+      const p = (isOwnProfile && myProfile) ? myProfile : await dbGet<UserProfile>(`users/${targetUid}/profile`);
       setProfile(p);
 
-      const allApps = await dbGet<Record<string, MiniApp>>('apps');
+      let allApps: Record<string, MiniApp> | null = null;
+      if (navigator.onLine) {
+        allApps = await dbGet<Record<string, MiniApp>>('apps');
+        if (allApps) localStorage.setItem('aiplex_cached_apps', JSON.stringify(allApps));
+      }
+
+      if (!allApps) {
+        const cached = localStorage.getItem('aiplex_cached_apps');
+        if (cached) allApps = JSON.parse(cached);
+      }
+
       if (allApps) {
         const appsList = Object.values(allApps);
         if (isOwnProfile) {
@@ -49,7 +59,7 @@ export default function Profile() {
       setLoading(false);
     }
     fetchData();
-  }, [uid, user, activeTab, isOwnProfile]);
+  }, [uid, user, activeTab, isOwnProfile, myProfile]);
   
   useEffect(() => {
     if (showSettings) {

@@ -6,6 +6,115 @@ const ai = new GoogleGenAI({ apiKey: API_KEY });
 const GEMINI_MODEL = "gemini-flash-latest"; 
 const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview";
 
+const AIPLEX_API_CONTEXT = `
+AIPLEX PLATFORM CONTEXT — READ CAREFULLY:
+
+You are generating a mini-app that will run inside the AIPLEX platform. The platform
+injects a global object ` + "`window.AIPLEX`" + ` before your app code runs. You have access to
+a real-time Firebase database, a base64 file storage system, and a full authentication
+system — all scoped to this app. Use them freely.
+
+═══════════════════════════════════════════════
+DATASET API — Real-time key-value / folder store
+═══════════════════════════════════════════════
+
+// Write a value (creates nested folders automatically)
+await AIPLEX.dataset.write('scores.player1', 100);
+await AIPLEX.dataset.write('config.theme', 'dark');
+await AIPLEX.dataset.write('users.alice.score', 42);
+
+// Read a value
+const score = await AIPLEX.dataset.read('scores.player1'); // → 100
+
+// Read everything
+const all = await AIPLEX.dataset.getAll(); // → tree of all nodes
+
+// Delete a field or folder (deletes children too)
+await AIPLEX.dataset.delete('scores.player1');
+
+// Create a folder explicitly
+await AIPLEX.dataset.createFolder('leaderboard.week1');
+
+// Real-time listener — fires instantly when data changes
+const unsub = AIPLEX.dataset.onWrite('scores', (newValue) => {
+  renderLeaderboard(newValue);
+});
+// Call unsub() to stop listening
+
+Path notation: always dot-separated strings. "users.alice.score" means
+folder "users" → folder "alice" → field "score".
+
+═══════════════════════════════════════════════
+STORAGE API — Base64 file storage
+═══════════════════════════════════════════════
+
+// Save an image (pass full base64 data URI)
+await AIPLEX.storage.write('avatar.png', dataUri, 'image/png');
+
+// Retrieve a file — returns base64 data URI, use directly as <img src>
+const src = await AIPLEX.storage.read('avatar.png');
+document.querySelector('#avatar').src = src;
+
+// Delete a file
+await AIPLEX.storage.delete('avatar.png');
+
+// List all files
+const files = await AIPLEX.storage.list();
+// → [{ id: 'avatar.png', mimeType: 'image/png', sizeBytes: 12400, createdAt: 1234567 }]
+
+To store user-uploaded images: use FileReader to get base64, then storage.write().
+
+═══════════════════════════════════════════════
+AUTH API — Per-app user authentication
+═══════════════════════════════════════════════
+
+// Sign up a new user
+const user = await AIPLEX.auth.signup(email, password, displayName, { role: 'player' });
+// → { authUserId, token, email, displayName }
+// Store token in localStorage for session persistence
+
+// Log in
+const user = await AIPLEX.auth.login(email, password);
+// → { authUserId, token, email, displayName }
+
+// Verify a stored token (call on app load to restore session)
+const session = await AIPLEX.auth.verify(localStorage.getItem('token'));
+if (!session) { showLoginScreen(); }
+
+// Log out
+await AIPLEX.auth.logout(localStorage.getItem('token'));
+localStorage.removeItem('token');
+
+// Update user profile
+await AIPLEX.auth.updateUser(authUserId, { displayName: 'New Name', metadata: { score: 99 } });
+
+// Delete a user
+await AIPLEX.auth.deleteUser(authUserId);
+
+// List all users (admin use)
+const users = await AIPLEX.auth.listUsers();
+
+IMPORTANT: Passwords are hashed with SHA-256 client-side before storage.
+Never store or transmit raw passwords.
+Sessions expire after 24 hours. Always check verify() on app load.
+
+═══════════════════════════════════════════════
+RULES FOR AI APP GENERATION
+═══════════════════════════════════════════════
+
+1. ALL state that should persist must use AIPLEX.dataset.write — never rely on localStorage
+   alone for data that should survive across users or devices.
+2. Use AIPLEX.auth for any app that has the concept of users, profiles, or login.
+3. Use AIPLEX.storage for any user-uploaded images or binary data.
+4. All AIPLEX API calls are async — always use await or .then().
+5. The app must be a SINGLE self-contained HTML file. No external JS files.
+6. CDN libraries are allowed (e.g. from cdnjs.cloudflare.com).
+7. Always design mobile-first. The iframe viewport is ~390px wide on mobile.
+8. Add a loading state shown while async operations are in progress.
+9. Handle errors from AIPLEX calls gracefully — show user-friendly messages.
+10. AIPLEX.context.appId and AIPLEX.context.ownerUid are available if needed.
+`;
+
 export async function analyzeNativeVideo(file: File) {
     try {
         // 1. Upload the file to Google's servers
@@ -83,6 +192,7 @@ export async function analyzeNativeVideo(file: File) {
 export async function generateMiniApp(prompt: string, context?: string) {
   const fullPrompt = `
     You are an expert mobile-first web developer. 
+    ${AIPLEX_API_CONTEXT}
     Create a complete, self-contained HTML file (including CSS and JavaScript in the same file) for a mini-app based on this idea: "${prompt}".
     ${context ? `Detailed Technical Specs from Analysis: ${context}` : ''}
     
@@ -110,6 +220,7 @@ export async function generateMiniApp(prompt: string, context?: string) {
 
 export async function editAppCode(currentCode: string, editDescription: string) {
   const prompt = `
+    ${AIPLEX_API_CONTEXT}
     Here is the current code for a mini-app:
     ---
     ${currentCode}

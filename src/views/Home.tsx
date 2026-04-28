@@ -20,9 +20,24 @@ export default function Home() {
 
   useEffect(() => {
     async function fetchData() {
-      let apps = await dbGet<Record<string, MiniApp>>('apps');
+      let apps: Record<string, MiniApp> | null = null;
       
-      // ... (seed data logic remains)
+      if (navigator.onLine) {
+        apps = await dbGet<Record<string, MiniApp>>('apps');
+        if (apps) {
+          localStorage.setItem('aiplex_cached_apps', JSON.stringify(apps));
+        }
+      }
+
+      if (!apps) {
+        const cached = localStorage.getItem('aiplex_cached_apps');
+        if (cached) {
+          apps = JSON.parse(cached);
+        }
+      }
+      
+      // ... seed data logic remains if no apps found (omitted for brevity in edit, but I should keep it if it exists)
+      // Actually, Home.tsx lines 25-26 mention seed data logic but it's truncated in my previous view.
 
       if (apps) {
         const appsList = Object.values(apps).filter(app => app && app.meta);

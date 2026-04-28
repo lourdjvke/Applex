@@ -1,19 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { dbGet, dbUpdate, dbRemove } from '../lib/firebase';
+import { dbGet, dbUpdate } from '../lib/firebase';
 import { MiniApp } from '../types';
 import { useAuth } from '../lib/AuthContext';
 import { ArrowLeft, MoreVertical, RefreshCw, Smartphone, Trash2, Share2, Star } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { DatasetEngine } from '../lib/dataset-engine';
+import { buildSandboxedHTML } from '../lib/sandbox-bridge';
 
 export default function Runner() {
   const { id } = useParams<{ id: string }>();
   const [app, setApp] = useState<MiniApp | null>(null);
   const [loading, setLoading] = useState(true);
   const [showMenu, setShowMenu] = useState(false);
-  const { user, profile } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const engineRef = useRef<DatasetEngine | null>(null);
+  const liveListeners = useRef<Map<string, () => void>>(new Map());
 
   useEffect(() => {
     async function fetchData() {
@@ -45,18 +49,72 @@ export default function Runner() {
           }
         }
       } catch (err) {
-        console.error("Fetch failed, trying cache", err);
-        try {
-           const res = await fetch(`/api/local-app/${id}`);
-           if (res.ok) {
-             const appData = await res.json();
-             if (appData) setApp(appData);
-           }
-        } catch (e) {}
+        console.error("Fetch failed", err);
       }
       setLoading(false);
     }
     fetchData();
+  }, [id]);
+
+  useEffect(() => {
+    if (app) {
+      engineRef.current = new DatasetEngine(app.meta.creatorUid, app.id);
+    }
+  }, [app]);
+
+  useEffect(() => {
+    const handleMessage = async (e: MessageEvent) => {
+      if (!e.data?.__aiplex || e.source !== iframeRef.current?.contentWindow) return;
+      const { id: callId, method, args } = e.data;
+      const engine = engineRef.current;
+      if (!engine) return;
+
+      try {
+        let result;
+        if (method === 'dataset.write') result = await engine.write(args[0], args[1]);
+        else if (method === 'dataset.read') result = await engine.read(args[0]);
+        else if (method === 'dataset.delete') result = await engine.delete(args[0]);
+        else if (method === 'dataset.getAll') result = await engine.getAll();
+        else if (method === 'dataset.createFolder') result = await engine.createFolder(args[0]);
+        else if (method === 'dataset.onWrite') {
+          const [path, listenerId] = args;
+          const unsub = engine.onWrite(path, (value) => {
+            iframeRef.current?.contentWindow?.postMessage({ __aiplexLive: true, listenerId, value }, '*');
+          });
+          liveListeners.current.set(listenerId, unsub);
+          result = true;
+        }
+        else if (method === 'dataset.offWrite') {
+          const unsub = liveListeners.current.get(args[0]);
+          if (unsub) { unsub(); liveListeners.current.delete(args[0]); }
+          result = true;
+        }
+        else if (method === 'storage.write') result = await engine.storageWrite(args[0], args[1], args[2]);
+        else if (method === 'storage.read') result = await engine.storageRead(args[0]);
+        else if (method === 'storage.delete') result = await engine.storageDelete(args[0]);
+        else if (method === 'storage.list') result = await engine.storageList();
+        else if (method === 'auth.signup') result = await engine.authSignup(args[0], args[1], args[2], args[3]);
+        else if (method === 'auth.login') result = await engine.authLogin(args[0], args[1]);
+        else if (method === 'auth.logout') result = await engine.authLogout(args[0]);
+        else if (method === 'auth.verify') result = await engine.authVerifyToken(args[0]);
+        else if (method === 'auth.updateUser') result = await engine.authUpdateUser(args[0], args[1]);
+        else if (method === 'auth.deleteUser') result = await engine.authDeleteUser(args[0]);
+        else if (method === 'auth.listUsers') result = await engine.authListUsers();
+        else throw new Error(`Unknown method: ${method}`);
+
+        iframeRef.current?.contentWindow?.postMessage({ __aiplexReply: true, id: callId, result }, '*');
+      } catch (err: any) {
+        console.error("API call error", err);
+        iframeRef.current?.contentWindow?.postMessage({ __aiplexReply: true, id: callId, error: err.message }, '*');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      liveListeners.current.forEach(unsub => unsub());
+      liveListeners.current.clear();
+    };
   }, [id]);
 
   const handleUninstall = async () => {
@@ -67,42 +125,9 @@ export default function Runner() {
     }
   };
 
-  useEffect(() => {
-    (window as any).AIPLEX_INTERNAL = {
-      getStorage: (fileId: string) => null,
-      setStorage: (fileId: string, content: string, type: string) => {},
-      getData: (key: string) => localStorage.getItem(`app_${id}_data_${key}`),
-      setData: (key: string, value: any) => localStorage.setItem(`app_${id}_data_${key}`, JSON.stringify(value))
-    };
-
-    const injectApi = () => {
-      if (iframeRef.current?.contentWindow && user) {
-        try {
-          (iframeRef.current.contentWindow as any).AIPLEX = {
-            storage: {
-              get: (fileId: string) => (window as any).AIPLEX_INTERNAL.getStorage(fileId),
-              set: (fileId: string, content: string, type: string) => (window as any).AIPLEX_INTERNAL.setStorage(fileId, content, type)
-            },
-            data: {
-              get: (key: string) => (window as any).AIPLEX_INTERNAL.getData(key),
-              set: (key: string, value: any) => (window as any).AIPLEX_INTERNAL.setData(key, value)
-            },
-            user: {
-              uid: user.uid,
-              displayName: profile?.displayName || user.displayName || 'User'
-            }
-          };
-        } catch (e) {
-          console.warn("API injection delayed...");
-        }
-      }
-    };
-
-    const timer = setInterval(injectApi, 500);
-    return () => clearInterval(timer);
-  }, [id, user, profile]);
-
   if (loading) return <div className="h-screen bg-black flex items-center justify-center p-12 grow"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"></div></div>;
+
+  const sandboxedHtml = app ? buildSandboxedHTML(app.code.html, app.meta.creatorUid, app.id) : '';
 
   return (
     <div className="fixed inset-0 z-[200] bg-bg flex flex-col grow">
@@ -164,7 +189,7 @@ export default function Runner() {
              title={app?.meta?.name}
              className="w-full h-full border-none"
              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
-             srcDoc={app?.code?.html || ''}
+             srcDoc={sandboxedHtml}
            />
         </div>
       </div>
