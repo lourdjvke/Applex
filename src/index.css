@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-mono: "DM Mono", monospace;
+
+  --color-bg: #F5F2EC;
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #F0EDE6;
+  --color-primary: #C8102E;
+  --color-primary-dim: #9E0C24;
+  --color-accent: #E8634A;
+  --color-accent-2: #F0C93A;
+  --color-text-primary: #1A1A1A;
+  --color-text-secondary: #6B6560;
+  --color-text-muted: #A09890;
+  --color-border: #E2DDD6;
+  --color-installed: #2A7A4B;
+  
+  --shadow-card: 0 2px 12px rgba(0,0,0,0.08);
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-text-primary font-sans antialiased;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Custom scrollbar for webkit */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded-full hover:bg-text-muted;
+}

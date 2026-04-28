@@ -1,0 +1,9 @@
+{
+  "name": "Remix: AIPLEX",
+  "description": "AI-powered mini-app platform for creating, sharing, and running AI-generated experiences.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
