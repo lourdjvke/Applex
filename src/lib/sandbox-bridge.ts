@@ -58,6 +58,9 @@ export function generateBridgeScript(ownerUid: string, appId: string) {
           window.removeEventListener('message', handler);
           return _call('dataset.off', [listenerId]);
         };
+      },
+      transaction:  (path, updateFn) => {
+        return _call('dataset.transaction', [path, updateFn.toString()]);
       }
     },
 

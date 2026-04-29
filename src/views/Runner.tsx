@@ -86,6 +86,12 @@ export default function Runner() {
           liveListeners.current.set(listenerId, unsub);
           result = true;
         }
+        else if (method === 'dataset.transaction') {
+          const [path, fnStr] = args;
+          // eslint-disable-next-line no-new-func
+          const updateFn = new Function('return ' + fnStr)();
+          result = await engine.transaction(path, updateFn);
+        }
         else if (method === 'dataset.onChildAdded') {
           const [path, listenerId] = args;
           const unsub = engine.onChildAdded(path, (value, key) => {

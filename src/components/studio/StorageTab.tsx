@@ -84,16 +84,7 @@ export default function StorageTab({ creatorUid, appId }: { creatorUid: string; 
              <div key={file.id} className="group bg-surface rounded-2xl border border-border overflow-hidden hover:border-primary/30 transition-all flex flex-col grow">
                 <div className="aspect-square bg-surface-alt flex items-center justify-center relative overflow-hidden">
                    {file.mimeType.startsWith('image/') ? (
-                      <img 
-                        src="" // We'd need to async load data uri per file if we want real preview, 
-                               // but that's heavy. I'll just use a placeholder icon for now or lazy load.
-                        alt={file.id}
-                        className="w-full h-full object-cover"
-                        // Placeholder trick
-                        onError={(e) => {
-                          (e.target as any).src = 'https://via.placeholder.com/150?text=Preview';
-                        }}
-                      />
+                      <ImageIcon className="w-8 h-8 text-text-muted opacity-50" />
                    ) : (
                       <File size={32} className="text-text-muted opacity-20" />
                    )}

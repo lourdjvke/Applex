@@ -1,5 +1,5 @@
 import { db } from './firebase';
-import { ref, get, set, push, update, remove, onValue, onChildAdded, off } from 'firebase/database';
+import { ref, get, set, push, update, remove, onValue, onChildAdded, runTransaction, off } from 'firebase/database';
 
 export class DatasetEngine {
   ownerUid: string;
@@ -43,7 +43,15 @@ export class DatasetEngine {
       } else if (item.type === 'update') {
         await update(this._ref(item.path), item.value);
       } else if (item.type === 'push') {
-        const pRef = item.pushKey ? ref(db, `${this._ref(item.path).toString()}/${item.pushKey}`) : push(this._ref(item.path));
+        let pRef;
+        if (item.pushKey) {
+          const strPath = Array.isArray(item.path) ? item.path.join('/') : item.path;
+          const clean = strPath.replace(/\./g, '/').replace(/^\/|\/$/g, '');
+          const basePath = (!clean || clean === '') ? `${this.basePath}/dataset` : `${this.basePath}/dataset/${clean}`;
+          pRef = ref(db, `${basePath}/${item.pushKey}`);
+        } else {
+          pRef = push(this._ref(item.path));
+        }
         await set(pRef, item.value);
       } else if (item.type === 'remove') {
         await remove(this._ref(item.path));
@@ -103,13 +111,14 @@ export class DatasetEngine {
   }
 
   async push(path: string, value: any) {
-    const pushKey = push(this._ref(path)).key;
+    const pRef = push(this._ref(path));
+    const pushKey = pRef.key;
     if (this._isOffline) {
       this._offlineQueue.push({ type: 'push', path, value, pushKey, ts: Date.now() });
       this._saveQueue();
       return pushKey;
     }
-    await set(ref(db, `${this._ref(path).toString()}/${pushKey}`), value);
+    await set(pRef, value);
     await this._touchMeta();
     return pushKey;
   }
@@ -133,6 +142,17 @@ export class DatasetEngine {
       const cached = this._getCached(`dataset_path_${path}`);
       return cached !== null && cached !== undefined;
     }
+  }
+
+  async transaction(path: string, updateFn: (val: any) => any) {
+    if (this._isOffline) {
+      const current = await this.get(path);
+      const updated = updateFn(current);
+      await this.set(path, updated);
+      return;
+    }
+    await runTransaction(this._ref(path), updateFn);
+    await this._touchMeta();
   }
 
   async remove(path: string) {
