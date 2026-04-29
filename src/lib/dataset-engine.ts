@@ -7,16 +7,91 @@ export class DatasetEngine {
   appId: string;
   basePath: string;
   private _listeners: Map<string, { ref: any, handler: any }> = new Map();
+  private _offlineQueue: any[] = [];
+  private _isOffline = !navigator.onLine;
 
   constructor(ownerUid: string, appId: string) {
     this.ownerUid = ownerUid;
     this.appId = appId;
     this.basePath = `/proddata/${ownerUid}/${appId}`;
+    this._initOfflineSupport();
+  }
+
+  private _initOfflineSupport() {
+    // Listen for online/offline events
+    window.addEventListener('online', () => {
+      this._isOffline = false;
+      this._processQueue();
+    });
+    window.addEventListener('offline', () => {
+      this._isOffline = true;
+    });
+
+    // Load queue from storage
+    const stored = localStorage.getItem(`aiplex_queue_${this.appId}`);
+    if (stored) {
+      this._offlineQueue = JSON.parse(stored);
+      if (!this._isOffline) this._processQueue();
+    }
+  }
+
+  private async _processQueue() {
+    if (this._offlineQueue.length === 0) return;
+    const item = this._offlineQueue[0];
+    try {
+      if (item.type === 'write') {
+        const parts = this._parsePath(item.path);
+        const nodeRef = await this._resolveOrCreatePath(parts);
+        const valueType = this._inferType(item.value);
+        await update(nodeRef, {
+          __type: 'field',
+          __name: parts[parts.length - 1],
+          __parent: await this._getOrCreateParentForWrite(parts),
+          __updatedAt: Date.now(),
+          value: typeof item.value === 'object' ? JSON.stringify(item.value) : item.value,
+          valueType
+        });
+      } else if (item.type === 'delete') {
+        const parts = this._parsePath(item.path);
+        const nodeId = await this._findNodeByPath(parts);
+        if (nodeId) await this._deleteNodeAndChildren(nodeId);
+      }
+      
+      this._offlineQueue.shift();
+      this._saveQueue();
+      this._processQueue(); // Next one
+    } catch (err) {
+      console.error('Sync failed, will retry', err);
+    }
+  }
+
+  private _saveQueue() {
+    localStorage.setItem(`aiplex_queue_${this.appId}`, JSON.stringify(this._offlineQueue));
+  }
+
+  private _cacheData(key: string, data: any) {
+    localStorage.setItem(`aiplex_cache_${this.appId}_${key}`, JSON.stringify(data));
+  }
+
+  private _getCached(key: string) {
+    const data = localStorage.getItem(`aiplex_cache_${this.appId}_${key}`);
+    return data ? JSON.parse(data) : null;
   }
 
   // --- DATASET ---
 
   async write(path: string | string[], value: any) {
+    // Optimistic UI / Offline Queue
+    if (this._isOffline) {
+      this._offlineQueue.push({ type: 'write', path, value, ts: Date.now() });
+      this._saveQueue();
+      // Update local cache of the whole dataset if possible
+      const current = this._getCached('dataset') || {};
+      // This is a partial update mock for the cache
+      // Realistically we'd need a more complex local patcher, but for now simple queue is best
+      return;
+    }
+
     const parts = this._parsePath(path);
     const nodeRef = await this._resolveOrCreatePath(parts);
     const valueType = this._inferType(value);
@@ -33,13 +108,26 @@ export class DatasetEngine {
   }
 
   async read(path: string | string[]) {
-    const dataRef = ref(db, `${this.basePath}/dataset`);
-    const snap = await get(dataRef);
-    const all = snap.val() || {};
-    return this._resolvePath(all, path);
+    try {
+      const dataRef = ref(db, `${this.basePath}/dataset`);
+      const snap = await get(dataRef);
+      const all = snap.val() || {};
+      this._cacheData('dataset', all);
+      return this._resolvePath(all, path);
+    } catch (err) {
+      const cached = this._getCached('dataset');
+      if (cached) return this._resolvePath(cached, path);
+      throw err;
+    }
   }
 
   async delete(path: string | string[]) {
+    if (this._isOffline) {
+      this._offlineQueue.push({ type: 'delete', path, ts: Date.now() });
+      this._saveQueue();
+      return true;
+    }
+
     const parts = this._parsePath(path);
     const nodeId = await this._findNodeByPath(parts);
     if (!nodeId) return false;
@@ -64,8 +152,14 @@ export class DatasetEngine {
   onWrite(path: string | string[], callback: (val: any) => void) {
     const key = `dataset_${path.toString()}`;
     const dataRef = ref(db, `${this.basePath}/dataset`);
+    
+    // Initial cached value
+    const cached = this._getCached('dataset');
+    if (cached) callback(this._resolvePath(cached, path));
+
     const handler = onValue(dataRef, snap => {
       const all = snap.val() || {};
+      this._cacheData('dataset', all);
       const resolved = this._resolvePath(all, path);
       callback(resolved);
     });
@@ -77,8 +171,16 @@ export class DatasetEngine {
   }
 
   async getAll() {
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    return this._buildTree(snap.val() || {});
+    try {
+      const snap = await get(ref(db, `${this.basePath}/dataset`));
+      const val = snap.val() || {};
+      this._cacheData('dataset', val);
+      return this._buildTree(val);
+    } catch (err) {
+      const cached = this._getCached('dataset');
+      if (cached) return this._buildTree(cached);
+      throw err;
+    }
   }
 
   // --- STORAGE ---
@@ -91,24 +193,44 @@ export class DatasetEngine {
       sizeBytes,
       createdAt: Date.now()
     });
+    // Cache the write locally
+    this._cacheData(`storage_${fileId}`, { content: base64DataUri, mimeType, sizeBytes, createdAt: Date.now() });
     await this._updateStorageBytes();
     return fileId;
   }
 
   async storageRead(fileId: string) {
-    const snap = await get(ref(db, `${this.basePath}/storage/${fileId.replace(/\./g, '_')}`));
-    if (!snap.exists()) return null;
-    return snap.val().content;
+    try {
+      const snap = await get(ref(db, `${this.basePath}/storage/${fileId.replace(/\./g, '_')}`));
+      if (!snap.exists()) return null;
+      const data = snap.val();
+      this._cacheData(`storage_${fileId}`, data);
+      return data.content;
+    } catch (err) {
+      const cached = this._getCached(`storage_${fileId}`);
+      return cached ? cached.content : null;
+    }
   }
 
   async storageDelete(fileId: string) {
     await remove(ref(db, `${this.basePath}/storage/${fileId.replace(/\./g, '_')}`));
+    localStorage.removeItem(`aiplex_cache_${this.appId}_storage_${fileId}`);
     await this._updateStorageBytes();
   }
 
   async storageList() {
-    const snap = await get(ref(db, `${this.basePath}/storage`));
-    const files = snap.val() || {};
+    try {
+      const snap = await get(ref(db, `${this.basePath}/storage`));
+      const files = snap.val() || {};
+      this._cacheData('storage_list', files);
+      return this._formatStorageList(files);
+    } catch (err) {
+      const cached = this._getCached('storage_list');
+      return cached ? this._formatStorageList(cached) : [];
+    }
+  }
+
+  private _formatStorageList(files: any) {
     return Object.entries(files).map(([id, data]: [string, any]) => ({
       id,
       mimeType: data.mimeType,
@@ -127,7 +249,6 @@ export class DatasetEngine {
     const emailLower = email.toLowerCase();
     const emailKey = this._sanitizeEmail(emailLower);
     
-    // Direct lookup for uniqueness without needing an index
     const lookupRef = ref(db, `${this.basePath}/auth/lookup/emails/${emailKey}`);
     const existing = await get(lookupRef);
     
@@ -145,7 +266,6 @@ export class DatasetEngine {
       metadata
     };
 
-    // Atomic write to both user record and lookup map
     const updates: any = {};
     updates[`${this.basePath}/auth/users/${authUserId}`] = userData;
     updates[`${this.basePath}/auth/lookup/emails/${emailKey}`] = authUserId;
@@ -153,21 +273,21 @@ export class DatasetEngine {
     await update(ref(db), updates);
     
     const token = await this._createSession(authUserId);
-    return { authUserId, token, email: emailLower, displayName };
+    const session = { authUserId, token, email: emailLower, displayName };
+    this._cacheData('auth_session', session);
+    return session;
   }
 
   async authLogin(email: string, password: string) {
     const emailLower = email.toLowerCase();
     const emailKey = this._sanitizeEmail(emailLower);
     
-    // 1. Get UID from lookup
     const lookupRef = ref(db, `${this.basePath}/auth/lookup/emails/${emailKey}`);
     const uidSnap = await get(lookupRef);
     
     if (!uidSnap.exists()) throw new Error('INVALID_CREDENTIALS');
     const authUserId = uidSnap.val();
 
-    // 2. Get User data
     const userSnap = await get(ref(db, `${this.basePath}/auth/users/${authUserId}`));
     if (!userSnap.exists()) throw new Error('INVALID_CREDENTIALS');
     
@@ -180,25 +300,41 @@ export class DatasetEngine {
     
     await set(ref(db, `${this.basePath}/auth/users/${authUserId}/lastLoginAt`), Date.now());
     const token = await this._createSession(authUserId);
-    return { authUserId, token, email: user.email, displayName: user.displayName };
+    const session = { authUserId, token, email: user.email, displayName: user.displayName };
+    this._cacheData('auth_session', session);
+    return session;
   }
 
   async authVerifyToken(token: string) {
-    const snap = await get(ref(db, `${this.basePath}/auth/sessions/${token}`));
-    if (!snap.exists()) return null;
-    const session = snap.val();
-    if (Date.now() > session.expiresAt) {
-      await remove(ref(db, `${this.basePath}/auth/sessions/${token}`));
+    try {
+      const snap = await get(ref(db, `${this.basePath}/auth/sessions/${token}`));
+      if (!snap.exists()) return null;
+      const session = snap.val();
+      if (Date.now() > session.expiresAt) {
+        await remove(ref(db, `${this.basePath}/auth/sessions/${token}`));
+        localStorage.removeItem(`aiplex_cache_${this.appId}_auth_session`);
+        return null;
+      }
+      const userSnap = await get(ref(db, `${this.basePath}/auth/users/${session.authUserId}`));
+      if (!userSnap.exists()) return null;
+      const userData = userSnap.val();
+      const profile = { authUserId: session.authUserId, ...userData, passwordHash: undefined };
+      this._cacheData('auth_profile', profile);
+      return profile;
+    } catch (err) {
+      // Offline: verify if cached token matches
+      const cachedSession = this._getCached('auth_session');
+      if (cachedSession && cachedSession.token === token) {
+        return this._getCached('auth_profile');
+      }
       return null;
     }
-    const userSnap = await get(ref(db, `${this.basePath}/auth/users/${session.authUserId}`));
-    if (!userSnap.exists()) return null;
-    const userData = userSnap.val();
-    return { authUserId: session.authUserId, ...userData, passwordHash: undefined };
   }
 
   async authLogout(token: string) {
     await remove(ref(db, `${this.basePath}/auth/sessions/${token}`));
+    localStorage.removeItem(`aiplex_cache_${this.appId}_auth_session`);
+    localStorage.removeItem(`aiplex_cache_${this.appId}_auth_profile`);
   }
 
   async authUpdateUser(authUserId: string, updates: any) {
@@ -207,6 +343,9 @@ export class DatasetEngine {
       Object.entries(updates).filter(([k]) => allowed.includes(k))
     );
     await update(ref(db, `${this.basePath}/auth/users/${authUserId}`), filtered);
+    // Refresh cache
+    const current = this._getCached('auth_profile');
+    if (current) this._cacheData('auth_profile', { ...current, ...filtered });
   }
 
   async authDeleteUser(authUserId: string) {
@@ -300,40 +439,68 @@ export class DatasetEngine {
   }
 
   private async _resolveOrCreatePath(parts: string[]) {
-    let parentId: string | null = null;
-    for (let i = 0; i < parts.length - 1; i++) {
-      parentId = await this._getOrCreateFolder(parts[i], parentId);
-    }
     const snap = await get(ref(db, `${this.basePath}/dataset`));
     const all = snap.val() || {};
-    const existing = Object.entries(all).find(
-      ([_, n]: [string, any]) => n.__name === parts[parts.length - 1] && n.__parent === parentId && n.__type === 'field'
+    
+    let parentId: string | null = null;
+    let currentId: string | null = null;
+
+    // Resolve folders
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i];
+      const existing = Object.entries(all).find(
+        ([_, n]: [string, any]) => n.__name === name && n.__parent === parentId
+      );
+
+      if (existing) {
+        parentId = existing[0];
+        // Ensure it's a folder
+        if (existing[1].__type !== 'folder') {
+          await update(ref(db, `${this.basePath}/dataset/${parentId}`), { __type: 'folder' });
+        }
+      } else {
+        // Create it
+        const newId = this._newId()!;
+        await set(ref(db, `${this.basePath}/dataset/${newId}`), {
+          __type: 'folder', __name: name, __parent: parentId,
+          __createdAt: Date.now(), __updatedAt: Date.now()
+        });
+        parentId = newId;
+        all[newId] = { __type: 'folder', __name: name, __parent: parentId }; // Update local map for next loop
+      }
+    }
+
+    // Resolve final field
+    const finalName = parts[parts.length - 1];
+    const existingField = Object.entries(all).find(
+      ([_, n]: [string, any]) => n.__name === finalName && n.__parent === parentId
     );
-    if (existing) return ref(db, `${this.basePath}/dataset/${existing[0]}`);
+
+    if (existingField) return ref(db, `${this.basePath}/dataset/${existingField[0]}`);
     const newId = this._newId();
     return ref(db, `${this.basePath}/dataset/${newId}`);
   }
 
-  private async _getOrCreateFolder(name: string, parentId: string | null) {
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    const all = snap.val() || {};
-    const existing = Object.entries(all).find(
-      ([_, n]: [string, any]) => n.__name === name && n.__parent === parentId && n.__type === 'folder'
-    );
-    if (existing) return existing[0];
-    const newId = this._newId()!;
-    await set(ref(db, `${this.basePath}/dataset/${newId}`), {
-      __type: 'folder', __name: name, __parent: parentId,
-      __createdAt: Date.now(), __updatedAt: Date.now()
-    });
-    return newId;
-  }
-
   private async _getOrCreateParentForWrite(parts: string[]) {
     if (parts.length <= 1) return null;
+    const snap = await get(ref(db, `${this.basePath}/dataset`));
+    const all = snap.val() || {};
+    
     let currentParentId: string | null = null;
     for (let i = 0; i < parts.length - 1; i++) {
-       currentParentId = await this._getOrCreateFolder(parts[i], currentParentId);
+       const name = parts[i];
+       const found = Object.entries(all).find(([_, n]: [string, any]) => n.__name === name && n.__parent === currentParentId);
+       if (found) {
+         currentParentId = found[0];
+       } else {
+         const newId = this._newId()!;
+         await set(ref(db, `${this.basePath}/dataset/${newId}`), {
+           __type: 'folder', __name: name, __parent: currentParentId,
+           __createdAt: Date.now(), __updatedAt: Date.now()
+         });
+         currentParentId = newId;
+         all[newId] = { __type: 'folder', __name: name, __parent: currentParentId };
+       }
     }
     return currentParentId;
   }

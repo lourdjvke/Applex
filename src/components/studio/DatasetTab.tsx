@@ -113,15 +113,26 @@ export default function DatasetTab({ creatorUid, appId }: { creatorUid: string; 
           {/* Actions */}
           <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
              <button 
-               onClick={() => {
-                 navigator.clipboard.writeText(currentPath);
-                 // Toast?
-               }} 
-               className="p-2 hover:bg-white rounded-lg transition-colors text-text-muted"
-               title="Copy path"
+                onClick={() => {
+                  navigator.clipboard.writeText(currentPath);
+                }} 
+                className="p-2 hover:bg-white rounded-lg transition-colors text-text-muted"
+                title="Copy path"
              >
                 <Copy size={14} />
              </button>
+             {isFolder && (
+               <button 
+                 onClick={() => {
+                   const sub = prompt(`New path relative to ${currentPath}:`);
+                   if(sub) handleWrite(`${currentPath}.${sub}`, 'new value');
+                 }} 
+                 className="p-2 hover:bg-white rounded-lg transition-colors text-text-muted"
+                 title="Add Sub-item"
+               >
+                  <Plus size={14} />
+               </button>
+             )}
              {isField && (
                <button 
                  onClick={() => {

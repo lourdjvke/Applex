@@ -12,10 +12,18 @@ AIPLEX PLATFORM CONTEXT — READ CAREFULLY:
 You are generating a mini-app that will run inside the AIPLEX platform. The platform
 injects a global object ` + "`window.AIPLEX`" + ` before your app code runs. You have access to
 a real-time Firebase database, a base64 file storage system, and a full authentication
-system — all scoped to this app. Use them freely.
+system — all scoped to this app.
+
+NEW: This platform has native OFFLINE-FIRST support. 
+- AIPLEX.dataset.read() and getAll() automatically cache data locally for offline viewing.
+- AIPLEX.dataset.write() and delete() queue changes while offline and sync automatically when online.
+- AIPLEX.auth.verify() works offline if a session was previously active.
+- AIPLEX.storage.read() caches files locally after the first fetch.
+
+Use these freely to build apps that work everywhere!
 
 ═══════════════════════════════════════════════
-DATASET API — Real-time key-value / folder store
+DATASET API — Real-time & Offline-Ready store
 ═══════════════════════════════════════════════
 
 // Write a value (creates nested folders automatically)
@@ -23,10 +31,17 @@ await AIPLEX.dataset.write('scores.player1', 100);
 await AIPLEX.dataset.write('config.theme', 'dark');
 await AIPLEX.dataset.write('users.alice.score', 42);
 
-// REAL-TIME STATE PATTERN:
+// REAL-TIME & NESTED STATE PATTERN:
 // Always initialize your app state by reading from AIPLEX.dataset.read() or getAll().
+// Use nested paths to organize data (e.g., 'users.' + userId + '.profile').
 // When a button is clicked, update both your local UI state AND call AIPLEX.dataset.write().
 // For multi-user apps, use AIPLEX.dataset.onWrite() to sync state across all users instantly.
+// Note: nested fields are automatically handled as folders/fields.
+// IMAGES & STORAGE PATTERN:
+// Step 1: Upload via AIPLEX.storage.write(fileId, dataUri, mime)
+// Step 2: Store the fileId in the dataset (e.g., 'users.123.avatarId')
+// Step 3: To display, call await AIPLEX.storage.read(avatarId) to get the data URI.
+// Use a <img> tag with the resulting data URI. If data is null/loading, use a placeholder.
 
 // Read a value
 const score = await AIPLEX.dataset.read('scores.player1'); // → 100
