@@ -71,20 +71,30 @@ export default function Runner() {
 
       try {
         let result;
-        if (method === 'dataset.write') result = await engine.write(args[0], args[1]);
-        else if (method === 'dataset.read') result = await engine.read(args[0]);
-        else if (method === 'dataset.delete') result = await engine.delete(args[0]);
-        else if (method === 'dataset.getAll') result = await engine.getAll();
-        else if (method === 'dataset.createFolder') result = await engine.createFolder(args[0]);
-        else if (method === 'dataset.onWrite') {
+        if (method === 'dataset.set') result = await engine.set(args[0], args[1]);
+        else if (method === 'dataset.update') result = await engine.update(args[0], args[1]);
+        else if (method === 'dataset.push') result = await engine.push(args[0], args[1]);
+        else if (method === 'dataset.get') result = await engine.get(args[0]);
+        else if (method === 'dataset.exists') result = await engine.exists(args[0]);
+        else if (method === 'dataset.remove') result = await engine.remove(args[0]);
+        else if (method === 'dataset.newId') result = engine.newId(args[0]);
+        else if (method === 'dataset.on') {
           const [path, listenerId] = args;
-          const unsub = engine.onWrite(path, (value) => {
+          const unsub = engine.on(path, (value) => {
             iframeRef.current?.contentWindow?.postMessage({ __aiplexLive: true, listenerId, value }, '*');
           });
           liveListeners.current.set(listenerId, unsub);
           result = true;
         }
-        else if (method === 'dataset.offWrite') {
+        else if (method === 'dataset.onChildAdded') {
+          const [path, listenerId] = args;
+          const unsub = engine.onChildAdded(path, (value, key) => {
+            iframeRef.current?.contentWindow?.postMessage({ __aiplexLive: true, listenerId, value, key }, '*');
+          });
+          liveListeners.current.set(listenerId, unsub);
+          result = true;
+        }
+        else if (method === 'dataset.off') {
           const unsub = liveListeners.current.get(args[0]);
           if (unsub) { unsub(); liveListeners.current.delete(args[0]); }
           result = true;

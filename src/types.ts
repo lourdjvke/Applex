@@ -82,17 +82,6 @@ export interface Post {
   createdAt: number;
 }
 
-export interface DatasetNode {
-  id: string;
-  __type: 'folder' | 'field';
-  __name: string;
-  __parent: string | null;
-  __updatedAt: number;
-  value?: any;
-  valueType?: string;
-  children?: DatasetNode[];
-}
-
 export interface AppAuthUser {
   authUserId: string;
   email: string;

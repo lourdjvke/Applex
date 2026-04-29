@@ -18,51 +18,48 @@ NEW: This platform has native OFFLINE-FIRST support.
 - AIPLEX.dataset.read() and getAll() automatically cache data locally for offline viewing.
 - AIPLEX.dataset.write() and delete() queue changes while offline and sync automatically when online.
 - AIPLEX.auth.verify() works offline if a session was previously active.
+- AIPLEX.auth.logout() handles session termination correctly.
 - AIPLEX.storage.read() caches files locally after the first fetch.
 
 Use these freely to build apps that work everywhere!
 
-═══════════════════════════════════════════════
-DATASET API — Real-time & Offline-Ready store
-═══════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
+AIPLEX DATASET API — IDENTICAL TO FIREBASE REALTIME DATABASE
+═══════════════════════════════════════════════════════════════
 
-// Write a value (creates nested folders automatically)
-await AIPLEX.dataset.write('scores.player1', 100);
-await AIPLEX.dataset.write('config.theme', 'dark');
-await AIPLEX.dataset.write('users.alice.score', 42);
+The AIPLEX platform gives your mini-app a real-time database that works
+exactly like Firebase Realtime Database. You access it via window.AIPLEX.dataset.
+The database is a single JSON tree. Paths are slash or dot separated strings.
 
-// REAL-TIME & NESTED STATE PATTERN:
-// Always initialize your app state by reading from AIPLEX.dataset.read() or getAll().
-// Use nested paths to organize data (e.g., 'users.' + userId + '.profile').
-// When a button is clicked, update both your local UI state AND call AIPLEX.dataset.write().
-// For multi-user apps, use AIPLEX.dataset.onWrite() to sync state across all users instantly.
-// Note: nested fields are automatically handled as folders/fields.
-// IMAGES & STORAGE PATTERN:
-// Step 1: Upload via AIPLEX.storage.write(fileId, dataUri, mime)
-// Step 2: Store the fileId in the dataset (e.g., 'users.123.avatarId')
-// Step 3: To display, call await AIPLEX.storage.read(avatarId) to get the data URI.
-// Use a <img> tag with the resulting data URI. If data is null/loading, use a placeholder.
+CRITICAL RULE — NO DUPLICATION:
+Writing to a path that already has data UPDATES it. It never creates a duplicate.
+The path IS the identity. "users/uid_jacob" is one node. Always. You cannot have two.
 
-// Read a value
-const score = await AIPLEX.dataset.read('scores.player1'); // → 100
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// Read everything
-const all = await AIPLEX.dataset.getAll(); // → tree of all nodes
+WRITE:
+  await AIPLEX.dataset.set('path/to/key', value)
+  await AIPLEX.dataset.update('path/to/object', { key: val })  // non-destructive merge
+  const id = await AIPLEX.dataset.push('path/to/list', value) // auto push key
 
-// Delete a field or folder (deletes children too)
-await AIPLEX.dataset.delete('scores.player1');
+READ:
+  const val = await AIPLEX.dataset.get('path/to/key')
+  // Returns the value (string, number, boolean, object) or null if not found
+  // Getting an object path returns the full nested object
 
-// Create a folder explicitly
-await AIPLEX.dataset.createFolder('leaderboard.week1');
+LIVE:
+  const unsub = AIPLEX.dataset.on('path', (value) => { ... })
+  const unsub = AIPLEX.dataset.onChildAdded('path', (child, key) => { ... })
+  unsub() // stop listening
 
-// Real-time listener — fires instantly when data changes
-const unsub = AIPLEX.dataset.onWrite('scores', (newValue) => {
-  renderLeaderboard(newValue);
-});
-// Call unsub() to stop listening
+DELETE:
+  await AIPLEX.dataset.remove('path/to/key') // removes node and all children
 
-Path notation: always dot-separated strings. "users.alice.score" means
-folder "users" → folder "alice" → field "score".
+UTILS:
+  const id = AIPLEX.dataset.newId()          // unique push key
+  const yes = await AIPLEX.dataset.exists('path') // true | false
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ═══════════════════════════════════════════════
 STORAGE API — Base64 file storage

@@ -28,21 +28,35 @@ export function generateBridgeScript(ownerUid: string, appId: string) {
   window.AIPLEX = {
     // ── Dataset ──────────────────────────────────────────────
     dataset: {
-      write:        (path, value)   => _call('dataset.write', [path, value]),
-      read:         (path)          => _call('dataset.read', [path]),
-      delete:       (path)          => _call('dataset.delete', [path]),
-      getAll:       ()              => _call('dataset.getAll', []),
-      createFolder: (path)          => _call('dataset.createFolder', [path]),
-      onWrite:      (path, cb)      => {
+      set:          (path, value)   => _call('dataset.set', [path, value]),
+      update:       (path, value)   => _call('dataset.update', [path, value]),
+      push:         (path, value)   => _call('dataset.push', [path, value]),
+      get:          (path)          => _call('dataset.get', [path]),
+      exists:       (path)          => _call('dataset.exists', [path]),
+      remove:       (path)          => _call('dataset.remove', [path]),
+      newId:        (path = '')     => _call('dataset.newId', [path]),
+      on:           (path, cb)      => {
         const listenerId = 'listener_' + (++_callId);
-        _call('dataset.onWrite', [path, listenerId]);
+        _call('dataset.on', [path, listenerId]);
         const handler = e => {
           if (e.data?.__aiplexLive && e.data.listenerId === listenerId) cb(e.data.value);
         };
         window.addEventListener('message', handler);
         return () => {
           window.removeEventListener('message', handler);
-          return _call('dataset.offWrite', [listenerId]);
+          return _call('dataset.off', [listenerId]);
+        };
+      },
+      onChildAdded: (path, cb)      => {
+        const listenerId = 'listener_' + (++_callId);
+        _call('dataset.onChildAdded', [path, listenerId]);
+        const handler = e => {
+          if (e.data?.__aiplexLive && e.data.listenerId === listenerId) cb(e.data.value, e.data.key);
+        };
+        window.addEventListener('message', handler);
+        return () => {
+          window.removeEventListener('message', handler);
+          return _call('dataset.off', [listenerId]);
         };
       }
     },

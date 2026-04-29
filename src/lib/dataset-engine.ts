@@ -1,12 +1,11 @@
 import { db } from './firebase';
-import { ref, get, set, push, update, remove, onValue, orderByChild, equalTo, query, off } from 'firebase/database';
-import { DatasetNode } from '../types';
+import { ref, get, set, push, update, remove, onValue, onChildAdded, off } from 'firebase/database';
 
 export class DatasetEngine {
   ownerUid: string;
   appId: string;
   basePath: string;
-  private _listeners: Map<string, { ref: any, handler: any }> = new Map();
+  private _listeners: Map<string, { ref: any, handler: any, eventType?: string }> = new Map();
   private _offlineQueue: any[] = [];
   private _isOffline = !navigator.onLine;
 
@@ -39,22 +38,15 @@ export class DatasetEngine {
     if (this._offlineQueue.length === 0) return;
     const item = this._offlineQueue[0];
     try {
-      if (item.type === 'write') {
-        const parts = this._parsePath(item.path);
-        const nodeRef = await this._resolveOrCreatePath(parts);
-        const valueType = this._inferType(item.value);
-        await update(nodeRef, {
-          __type: 'field',
-          __name: parts[parts.length - 1],
-          __parent: await this._getOrCreateParentForWrite(parts),
-          __updatedAt: Date.now(),
-          value: typeof item.value === 'object' ? JSON.stringify(item.value) : item.value,
-          valueType
-        });
-      } else if (item.type === 'delete') {
-        const parts = this._parsePath(item.path);
-        const nodeId = await this._findNodeByPath(parts);
-        if (nodeId) await this._deleteNodeAndChildren(nodeId);
+      if (item.type === 'set') {
+        await set(this._ref(item.path), item.value);
+      } else if (item.type === 'update') {
+        await update(this._ref(item.path), item.value);
+      } else if (item.type === 'push') {
+        const pRef = item.pushKey ? ref(db, `${this._ref(item.path).toString()}/${item.pushKey}`) : push(this._ref(item.path));
+        await set(pRef, item.value);
+      } else if (item.type === 'remove') {
+        await remove(this._ref(item.path));
       }
       
       this._offlineQueue.shift();
@@ -80,107 +72,141 @@ export class DatasetEngine {
 
   // --- DATASET ---
 
-  async write(path: string | string[], value: any) {
-    // Optimistic UI / Offline Queue
+  _ref(path: string | string[] = '') {
+    const strPath = Array.isArray(path) ? path.join('/') : path;
+    if (!strPath || strPath === '/' || strPath === '') return ref(db, `${this.basePath}/dataset`);
+    const clean = strPath.replace(/\./g, '/').replace(/^\/|\/$/g, '');
+    return ref(db, `${this.basePath}/dataset/${clean}`);
+  }
+
+  async set(path: string, value: any) {
     if (this._isOffline) {
-      this._offlineQueue.push({ type: 'write', path, value, ts: Date.now() });
+      this._offlineQueue.push({ type: 'set', path, value, ts: Date.now() });
       this._saveQueue();
-      // Update local cache of the whole dataset if possible
-      const current = this._getCached('dataset') || {};
-      // This is a partial update mock for the cache
-      // Realistically we'd need a more complex local patcher, but for now simple queue is best
       return;
     }
-
-    const parts = this._parsePath(path);
-    const nodeRef = await this._resolveOrCreatePath(parts);
-    const valueType = this._inferType(value);
-    
-    await update(nodeRef, {
-      __type: 'field',
-      __name: parts[parts.length - 1],
-      __parent: await this._getOrCreateParentForWrite(parts),
-      __updatedAt: Date.now(),
-      value: typeof value === 'object' ? JSON.stringify(value) : value,
-      valueType
-    });
+    await set(this._ref(path), value);
     await this._touchMeta();
   }
 
-  async read(path: string | string[]) {
-    try {
-      const dataRef = ref(db, `${this.basePath}/dataset`);
-      const snap = await get(dataRef);
-      const all = snap.val() || {};
-      this._cacheData('dataset', all);
-      return this._resolvePath(all, path);
-    } catch (err) {
-      const cached = this._getCached('dataset');
-      if (cached) return this._resolvePath(cached, path);
-      throw err;
+  async update(path: string, value: any) {
+    if (typeof value !== 'object' || value === null) {
+      throw new Error('update() requires an object');
     }
-  }
-
-  async delete(path: string | string[]) {
     if (this._isOffline) {
-      this._offlineQueue.push({ type: 'delete', path, ts: Date.now() });
+      this._offlineQueue.push({ type: 'update', path, value, ts: Date.now() });
       this._saveQueue();
-      return true;
+      return;
     }
-
-    const parts = this._parsePath(path);
-    const nodeId = await this._findNodeByPath(parts);
-    if (!nodeId) return false;
-    await this._deleteNodeAndChildren(nodeId);
-    return true;
+    await update(this._ref(path), value);
+    await this._touchMeta();
   }
 
-  async createFolder(path: string | string[]) {
-    const parts = this._parsePath(path);
-    const nodeId = this._newId();
-    const parentId = await this._getOrCreateParentForWrite(parts);
-    await set(ref(db, `${this.basePath}/dataset/${nodeId}`), {
-      __type: 'folder',
-      __name: parts[parts.length - 1],
-      __parent: parentId,
-      __createdAt: Date.now(),
-      __updatedAt: Date.now()
-    });
-    return nodeId;
+  async push(path: string, value: any) {
+    const pushKey = push(this._ref(path)).key;
+    if (this._isOffline) {
+      this._offlineQueue.push({ type: 'push', path, value, pushKey, ts: Date.now() });
+      this._saveQueue();
+      return pushKey;
+    }
+    await set(ref(db, `${this._ref(path).toString()}/${pushKey}`), value);
+    await this._touchMeta();
+    return pushKey;
   }
 
-  onWrite(path: string | string[], callback: (val: any) => void) {
-    const key = `dataset_${path.toString()}`;
-    const dataRef = ref(db, `${this.basePath}/dataset`);
+  async get(path: string) {
+    try {
+      const snap = await get(this._ref(path));
+      const val = snap.val();
+      this._cacheData(`dataset_path_${path}`, val);
+      return val;
+    } catch (err) {
+      return this._getCached(`dataset_path_${path}`);
+    }
+  }
+
+  async exists(path: string) {
+    try {
+      const snap = await get(this._ref(path));
+      return snap.exists();
+    } catch (err) {
+      const cached = this._getCached(`dataset_path_${path}`);
+      return cached !== null && cached !== undefined;
+    }
+  }
+
+  async remove(path: string) {
+    if (this._isOffline) {
+      this._offlineQueue.push({ type: 'remove', path, ts: Date.now() });
+      this._saveQueue();
+      return;
+    }
+    await remove(this._ref(path));
+    await this._touchMeta();
+  }
+
+  on(path: string, callback: (val: any) => void) {
+    const r = this._ref(path);
+    const key = `dataset_on_${r.toString()}`;
     
-    // Initial cached value
-    const cached = this._getCached('dataset');
-    if (cached) callback(this._resolvePath(cached, path));
+    const cached = this._getCached(`dataset_path_${path}`);
+    if (cached) callback(cached);
 
-    const handler = onValue(dataRef, snap => {
-      const all = snap.val() || {};
-      this._cacheData('dataset', all);
-      const resolved = this._resolvePath(all, path);
-      callback(resolved);
-    });
-    this._listeners.set(key, { ref: dataRef, handler });
+    const handler = (snap: any) => {
+      const val = snap.val();
+      this._cacheData(`dataset_path_${path}`, val);
+      callback(val);
+    };
+    onValue(r, handler);
+    this._listeners.set(key, { ref: r, handler, eventType: 'value' });
+    
     return () => {
-      off(dataRef, 'value', handler);
+      off(r, 'value', handler);
       this._listeners.delete(key);
     };
   }
 
-  async getAll() {
+  onChildAdded(path: string, callback: (val: any, key: string | null) => void) {
+    const r = this._ref(path);
+    const listenerKey = `dataset_onChildAdded_${r.toString()}`;
+    
+    const handler = (snap: any) => {
+      callback(snap.val(), snap.key);
+    };
+    onChildAdded(r, handler);
+    this._listeners.set(listenerKey, { ref: r, handler, eventType: 'child_added' });
+    
+    return () => {
+      off(r, 'child_added', handler);
+      this._listeners.delete(listenerKey);
+    };
+  }
+
+  newId(path: string = '') {
+    return push(this._ref(path)).key;
+  }
+
+  async getFullTree() {
     try {
-      const snap = await get(ref(db, `${this.basePath}/dataset`));
+      const snap = await get(this._ref(''));
       const val = snap.val() || {};
-      this._cacheData('dataset', val);
-      return this._buildTree(val);
+      this._cacheData('dataset_full_tree', val);
+      return val;
     } catch (err) {
-      const cached = this._getCached('dataset');
-      if (cached) return this._buildTree(cached);
-      throw err;
+      return this._getCached('dataset_full_tree') || {};
     }
+  }
+
+  onTree(callback: (val: any) => void) {
+    const r = this._ref('');
+    const key = `dataset_onTree_${r.toString()}`;
+    const handler = (snap: any) => callback(snap.val() || {});
+    onValue(r, handler);
+    this._listeners.set(key, { ref: r, handler, eventType: 'value' });
+    return () => {
+      off(r, 'value', handler);
+      this._listeners.delete(key);
+    };
   }
 
   // --- STORAGE ---
@@ -254,7 +280,7 @@ export class DatasetEngine {
     
     if (existing.exists()) throw new Error('EMAIL_EXISTS');
 
-    const authUserId = this._newId()!;
+    const authUserId = push(ref(db)).key as string;
     const passwordHash = await this._hashPassword(password);
     
     const userData = {
@@ -380,23 +406,6 @@ export class DatasetEngine {
 
   // --- HELPERS ---
 
-  private _newId() {
-    return push(ref(db, `${this.basePath}/dataset`)).key;
-  }
-
-  private _parsePath(path: string | string[]) {
-    if (Array.isArray(path)) return path;
-    return path.split('.').filter(Boolean);
-  }
-
-  private _inferType(value: any) {
-    if (value === null) return 'null';
-    if (typeof value === 'boolean') return 'boolean';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'object') return 'json';
-    return 'string';
-  }
-
   private async _hashPassword(password: string) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -423,124 +432,5 @@ export class DatasetEngine {
     await set(ref(db, `${this.basePath}/meta/storageBytesUsed`), total);
     await set(ref(db, `${this.basePath}/meta/appId`), this.appId);
     await set(ref(db, `${this.basePath}/meta/ownerUid`), this.ownerUid);
-  }
-
-  private _buildTree(flatNodes: Record<string, any>) {
-    const roots: any[] = [];
-    const map: Record<string, any> = {};
-    Object.entries(flatNodes).forEach(([id, node]) => {
-      map[id] = { id, ...node, children: [] };
-    });
-    Object.values(map).forEach(node => {
-      if (!node.__parent || !map[node.__parent]) roots.push(node);
-      else map[node.__parent].children.push(node);
-    });
-    return roots;
-  }
-
-  private async _resolveOrCreatePath(parts: string[]) {
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    const all = snap.val() || {};
-    
-    let parentId: string | null = null;
-    let currentId: string | null = null;
-
-    // Resolve folders
-    for (let i = 0; i < parts.length - 1; i++) {
-      const name = parts[i];
-      const existing = Object.entries(all).find(
-        ([_, n]: [string, any]) => n.__name === name && n.__parent === parentId
-      );
-
-      if (existing) {
-        parentId = existing[0];
-        // Ensure it's a folder
-        if (existing[1].__type !== 'folder') {
-          await update(ref(db, `${this.basePath}/dataset/${parentId}`), { __type: 'folder' });
-        }
-      } else {
-        // Create it
-        const newId = this._newId()!;
-        await set(ref(db, `${this.basePath}/dataset/${newId}`), {
-          __type: 'folder', __name: name, __parent: parentId,
-          __createdAt: Date.now(), __updatedAt: Date.now()
-        });
-        parentId = newId;
-        all[newId] = { __type: 'folder', __name: name, __parent: parentId }; // Update local map for next loop
-      }
-    }
-
-    // Resolve final field
-    const finalName = parts[parts.length - 1];
-    const existingField = Object.entries(all).find(
-      ([_, n]: [string, any]) => n.__name === finalName && n.__parent === parentId
-    );
-
-    if (existingField) return ref(db, `${this.basePath}/dataset/${existingField[0]}`);
-    const newId = this._newId();
-    return ref(db, `${this.basePath}/dataset/${newId}`);
-  }
-
-  private async _getOrCreateParentForWrite(parts: string[]) {
-    if (parts.length <= 1) return null;
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    const all = snap.val() || {};
-    
-    let currentParentId: string | null = null;
-    for (let i = 0; i < parts.length - 1; i++) {
-       const name = parts[i];
-       const found = Object.entries(all).find(([_, n]: [string, any]) => n.__name === name && n.__parent === currentParentId);
-       if (found) {
-         currentParentId = found[0];
-       } else {
-         const newId = this._newId()!;
-         await set(ref(db, `${this.basePath}/dataset/${newId}`), {
-           __type: 'folder', __name: name, __parent: currentParentId,
-           __createdAt: Date.now(), __updatedAt: Date.now()
-         });
-         currentParentId = newId;
-         all[newId] = { __type: 'folder', __name: name, __parent: currentParentId };
-       }
-    }
-    return currentParentId;
-  }
-
-  private async _findNodeByPath(parts: string[]) {
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    const all = snap.val() || {};
-    let parentId: string | null = null;
-    let found: [string, any] | null = null;
-    for (const part of parts) {
-      found = Object.entries(all).find(([_, n]: [string, any]) => n.__name === part && n.__parent === parentId) as [string, any] || null;
-      if (!found) return null;
-      parentId = found[0];
-    }
-    return found ? found[0] : null;
-  }
-
-  private async _deleteNodeAndChildren(nodeId: string) {
-    const snap = await get(ref(db, `${this.basePath}/dataset`));
-    const all = snap.val() || {};
-    const children = Object.entries(all).filter(([_, n]: [string, any]) => n.__parent === nodeId).map(([id]) => id);
-    await Promise.all(children.map(cid => this._deleteNodeAndChildren(cid)));
-    await remove(ref(db, `${this.basePath}/dataset/${nodeId}`));
-  }
-
-  private _resolvePath(flatNodes: Record<string, any>, dotPath: string | string[]) {
-    const parts = this._parsePath(dotPath);
-    const tree = this._buildTree(flatNodes);
-    let current: any = tree;
-    for (const part of parts) {
-      const node = (Array.isArray(current) ? current : (current.children || []))
-        .find((n: any) => n.__name === part);
-      if (!node) return undefined;
-      current = node;
-    }
-    if (!current) return undefined;
-    if (current.__type === 'field') {
-      return current.valueType === 'json' ? JSON.parse(current.value) : current.value;
-    }
-    if (current.__type === 'folder') return current.children;
-    return current;
   }
 }
