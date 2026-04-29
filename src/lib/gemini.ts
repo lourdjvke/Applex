@@ -23,6 +23,11 @@ await AIPLEX.dataset.write('scores.player1', 100);
 await AIPLEX.dataset.write('config.theme', 'dark');
 await AIPLEX.dataset.write('users.alice.score', 42);
 
+// REAL-TIME STATE PATTERN:
+// Always initialize your app state by reading from AIPLEX.dataset.read() or getAll().
+// When a button is clicked, update both your local UI state AND call AIPLEX.dataset.write().
+// For multi-user apps, use AIPLEX.dataset.onWrite() to sync state across all users instantly.
+
 // Read a value
 const score = await AIPLEX.dataset.read('scores.player1'); // → 100
 
@@ -209,7 +214,7 @@ export async function generateMiniApp(prompt: string, context?: string) {
   `;
 
   const response = await ai.models.generateContent({
-    model: GEMINI_PRO_MODEL,
+    model: GEMINI_MODEL,
     contents: fullPrompt
   });
 
@@ -232,7 +237,7 @@ export async function editAppCode(currentCode: string, editDescription: string) 
   `;
 
   const response = await ai.models.generateContent({
-    model: GEMINI_PRO_MODEL,
+    model: GEMINI_MODEL,
     contents: prompt
   });
 

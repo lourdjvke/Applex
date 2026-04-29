@@ -119,42 +119,64 @@ export class DatasetEngine {
 
   // --- AUTH ---
 
+  private _sanitizeEmail(email: string) {
+    return email.toLowerCase().replace(/\./g, ',');
+  }
+
   async authSignup(email: string, password: string, displayName: string = '', metadata: any = {}) {
     const emailLower = email.toLowerCase();
-    const usersRef = ref(db, `${this.basePath}/auth/users`);
-    const emailQuery = query(usersRef, orderByChild('email'), equalTo(emailLower));
-    const existing = await get(emailQuery);
+    const emailKey = this._sanitizeEmail(emailLower);
+    
+    // Direct lookup for uniqueness without needing an index
+    const lookupRef = ref(db, `${this.basePath}/auth/lookup/emails/${emailKey}`);
+    const existing = await get(lookupRef);
     
     if (existing.exists()) throw new Error('EMAIL_EXISTS');
 
     const authUserId = this._newId()!;
     const passwordHash = await this._hashPassword(password);
     
-    await set(ref(db, `${this.basePath}/auth/users/${authUserId}`), {
+    const userData = {
       email: emailLower,
       passwordHash,
       displayName,
       createdAt: Date.now(),
       lastLoginAt: Date.now(),
       metadata
-    });
+    };
+
+    // Atomic write to both user record and lookup map
+    const updates: any = {};
+    updates[`${this.basePath}/auth/users/${authUserId}`] = userData;
+    updates[`${this.basePath}/auth/lookup/emails/${emailKey}`] = authUserId;
+    
+    await update(ref(db), updates);
     
     const token = await this._createSession(authUserId);
     return { authUserId, token, email: emailLower, displayName };
   }
 
   async authLogin(email: string, password: string) {
-    const snap = await get(ref(db, `${this.basePath}/auth/users`));
-    const users = snap.val() || {};
-    const passwordHash = await this._hashPassword(password);
     const emailLower = email.toLowerCase();
+    const emailKey = this._sanitizeEmail(emailLower);
     
-    const match = Object.entries(users).find(([_, u]: [string, any]) => 
-      u.email === emailLower && u.passwordHash === passwordHash
-    );
+    // 1. Get UID from lookup
+    const lookupRef = ref(db, `${this.basePath}/auth/lookup/emails/${emailKey}`);
+    const uidSnap = await get(lookupRef);
     
-    if (!match) throw new Error('INVALID_CREDENTIALS');
-    const [authUserId, user] = match as [string, any];
+    if (!uidSnap.exists()) throw new Error('INVALID_CREDENTIALS');
+    const authUserId = uidSnap.val();
+
+    // 2. Get User data
+    const userSnap = await get(ref(db, `${this.basePath}/auth/users/${authUserId}`));
+    if (!userSnap.exists()) throw new Error('INVALID_CREDENTIALS');
+    
+    const user = userSnap.val();
+    const passwordHash = await this._hashPassword(password);
+    
+    if (user.passwordHash !== passwordHash) {
+      throw new Error('INVALID_CREDENTIALS');
+    }
     
     await set(ref(db, `${this.basePath}/auth/users/${authUserId}/lastLoginAt`), Date.now());
     const token = await this._createSession(authUserId);
@@ -188,6 +210,13 @@ export class DatasetEngine {
   }
 
   async authDeleteUser(authUserId: string) {
+    const userSnap = await get(ref(db, `${this.basePath}/auth/users/${authUserId}`));
+    if (userSnap.exists()) {
+      const user = userSnap.val();
+      const emailKey = this._sanitizeEmail(user.email);
+      await remove(ref(db, `${this.basePath}/auth/lookup/emails/${emailKey}`));
+    }
+
     await remove(ref(db, `${this.basePath}/auth/users/${authUserId}`));
     const sessionsSnap = await get(ref(db, `${this.basePath}/auth/sessions`));
     const allSessions = sessionsSnap.val() || {};

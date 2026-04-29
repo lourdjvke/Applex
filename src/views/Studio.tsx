@@ -114,17 +114,30 @@ export default function Studio() {
                     </div>
                   </div>
                   <div className="p-4 border-t border-border flex items-center justify-between">
-                     <span className={cn(
-                       "text-[10px] font-bold px-2 py-0.5 rounded uppercase",
-                       app.meta.isPublished ? "bg-installed/10 text-installed" : "bg-text-muted/10 text-text-muted"
-                     )}>
-                       {app.meta.isPublished ? 'Published' : 'Draft'}
-                     </span>
+                     <div className="flex items-center gap-2">
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded uppercase",
+                          app.meta.isPublished ? "bg-installed/10 text-installed" : "bg-text-muted/10 text-text-muted"
+                        )}>
+                          {app.meta.isPublished ? 'Published' : 'Draft'}
+                        </span>
+                        {app.meta.status === 'generating' && (
+                          <span className="animate-pulse bg-primary/10 text-primary text-[10px] font-bold px-2 py-0.5 rounded uppercase">
+                             Generating...
+                          </span>
+                        )}
+                        {app.meta.status === 'error' && (
+                          <span className="bg-primary/10 text-primary text-[10px] font-bold px-2 py-0.5 rounded uppercase">
+                             Error
+                          </span>
+                        )}
+                     </div>
                      <button 
+                       disabled={app.meta.status === 'generating'}
                        onClick={() => navigate(`/run/${app.id}`)}
-                       className="text-primary text-xs font-bold flex items-center gap-1 hover:gap-2 transition-all"
+                       className="text-primary text-xs font-bold flex items-center gap-1 hover:gap-2 transition-all disabled:opacity-30 disabled:pointer-events-none"
                      >
-                        Open App <Rocket size={14} />
+                        {app.meta.status === 'generating' ? 'Build Ongoing' : 'Open App'} <Rocket size={14} />
                      </button>
                   </div>
                </motion.div>

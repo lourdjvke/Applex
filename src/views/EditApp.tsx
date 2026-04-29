@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Sparkles, ChevronUp, Check, X, Rocket, RefreshCcw, Bell, Trash2 } from 'lucide-react';
+import { ArrowLeft, Save, Sparkles, ChevronUp, Check, X, Rocket, RefreshCcw, Bell, Trash2, Code, Copy, Eraser, Play } from 'lucide-react';
 import { dbGet, dbUpdate, dbSet, dbRemove } from '../lib/firebase';
 import { MiniApp, AppNotification } from '../types';
 import { useAuth } from '../lib/AuthContext';
@@ -22,6 +22,11 @@ export default function EditApp() {
   const [previewCode, setPreviewCode] = useState<string | null>(null);
   const [updateSummary, setUpdateSummary] = useState('');
   const [activeTab, setActiveTab] = useState<'details' | 'dataset' | 'storage' | 'auth'>('details');
+  const [showManualEditor, setShowManualEditor] = useState(false);
+  const [manualCode, setManualCode] = useState('');
+  const [manualEditorTab, setManualEditorTab] = useState<'code' | 'preview'>('code');
+  const [showDescriptionPrompt, setShowDescriptionPrompt] = useState(false);
+  const [versionDescription, setVersionDescription] = useState('');
   
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -68,8 +73,11 @@ export default function EditApp() {
     }
   };
 
-  const handleApplyVersion = async () => {
-    if (!app || !id || !previewCode || !user) return;
+  const handleApplyVersion = async (codeToApply?: string, summaryToApply?: string) => {
+    const finalCode = codeToApply || previewCode;
+    const finalSummary = summaryToApply || updateSummary;
+
+    if (!app || !id || !finalCode || !user) return;
     setSaving(true);
     
     const oldVersion = app.meta.version;
@@ -79,9 +87,9 @@ export default function EditApp() {
     const updates = {
       'meta/version': newVersion,
       'meta/updatedAt': Date.now(),
-      'meta/updateSummary': updateSummary,
-      'code/html': previewCode,
-      'code/sizeBytes': new Blob([previewCode]).size
+      'meta/updateSummary': finalSummary,
+      'code/html': finalCode,
+      'code/sizeBytes': new Blob([finalCode]).size
     };
 
     await dbUpdate(`apps/${id}`, updates);
@@ -94,7 +102,7 @@ export default function EditApp() {
         appName: app.meta.name,
         appIcon: app.meta.iconBase64,
         title: 'New Version Available',
-        message: updateSummary,
+        message: finalSummary,
         type: 'update',
         createdAt: Date.now(),
         isRead: false
@@ -105,17 +113,37 @@ export default function EditApp() {
       }
     }
 
-    setApp({ ...app, meta: { ...app.meta, version: newVersion, updateSummary }, code: { ...app.code, html: previewCode } });
+    setApp({ ...app, meta: { ...app.meta, version: newVersion, updateSummary: finalSummary }, code: { ...app.code, html: finalCode } });
     setPreviewCode(null);
     setShowAiSheet(false);
+    setShowManualEditor(false);
+    setShowDescriptionPrompt(false);
+    setVersionDescription('');
     setSaving(false);
   };
 
   if (loading) return <div className="p-12 text-center">Loading app data...</div>;
   if (!app) return <div className="p-12 text-center underline cursor-pointer" onClick={() => navigate('/studio')}>App not found. Back to Studio.</div>;
 
+  const isGenerating = app.meta.status === 'generating';
+
   return (
-    <div className="pb-24 grow">
+    <div className={cn("pb-24 grow", isGenerating && "opacity-50 pointer-events-none")}>
+      {isGenerating && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 text-center pointer-events-auto bg-bg/20 backdrop-blur-sm">
+           <div className="bg-surface p-8 rounded-2xl border border-border shadow-2xl max-w-sm">
+              <RefreshCcw size={32} className="mx-auto text-primary animate-spin mb-4" />
+              <h3 className="font-display font-bold text-lg mb-2">Build in Progress</h3>
+              <p className="text-sm text-text-muted mb-6">You cannot edit this app until the initial AI generation is complete. It usually takes less than a minute.</p>
+              <button 
+                onClick={() => navigate('/studio')}
+                className="w-full h-12 bg-primary text-white rounded-xl font-bold"
+              >
+                 Return to Studio
+              </button>
+           </div>
+        </div>
+      )}
       <header className="h-16 flex items-center justify-between px-4 border-b border-border sticky top-0 bg-bg/80 backdrop-blur-md z-30 grow">
         <div className="flex items-center gap-3">
            <button onClick={() => navigate('/studio')} className="p-2 hover:bg-surface-alt rounded-full transition-colors">
@@ -124,12 +152,7 @@ export default function EditApp() {
            <h1 className="font-display font-bold truncate max-w-[200px]">Edit {app.meta.name}</h1>
         </div>
         <div className="flex items-center gap-2">
-           <button 
-             onClick={() => setShowAiSheet(true)}
-             className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-lg text-sm font-bold hover:bg-primary/20 transition-all"
-           >
-              <Sparkles size={16} /> New Version
-           </button>
+           {/* Header is cleaner now */}
         </div>
       </header>
 
@@ -156,6 +179,28 @@ export default function EditApp() {
       <div className="max-w-5xl mx-auto p-6 grow">
         {activeTab === 'details' && (
           <div className="space-y-10 grow">
+            <div className="flex flex-wrap items-center gap-3 bg-surface p-4 rounded-2xl border border-border mb-6">
+               <div className="flex-1">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-1">Versioning</h3>
+                  <p className="text-[10px] text-text-muted">Create a new app version using AI or manual code.</p>
+               </div>
+               <button 
+                 onClick={() => setShowAiSheet(true)}
+                 className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-xl text-xs font-bold hover:bg-primary/20 transition-all shrink-0"
+               >
+                  <Sparkles size={14} /> AI Versioning
+               </button>
+               <button 
+                 onClick={() => {
+                   setManualCode(app.code.html);
+                   setShowManualEditor(true);
+                 }}
+                 className="flex items-center gap-2 px-4 py-2 bg-surface-alt border border-border text-text-secondary rounded-xl text-xs font-bold hover:bg-surface transition-all shrink-0"
+               >
+                  <Code size={14} /> New Version
+               </button>
+            </div>
+
             <form onSubmit={handleBasicSave} className="grid grid-cols-1 md:grid-cols-3 gap-10 grow">
               <div className="md:col-span-1 space-y-6">
                 <div className="relative group">
@@ -167,12 +212,12 @@ export default function EditApp() {
                 
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-bold">Status</p>
+                    <p className="text-[10px] font-bold uppercase text-text-muted">Status</p>
                     <button 
                       type="button"
                       onClick={() => setApp({ ...app, meta: { ...app.meta, isPublished: !app.meta.isPublished } })}
                       className={cn(
-                        "text-[10px] uppercase font-bold px-3 py-1 rounded-full transition-all",
+                        "text-[9px] uppercase font-bold px-2 py-0.5 rounded-full transition-all",
                         app.meta.isPublished ? "bg-installed/10 text-installed border border-installed/20" : "bg-text-muted/10 text-text-muted border border-border"
                       )}
                     >
@@ -180,15 +225,15 @@ export default function EditApp() {
                     </button>
                   </div>
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-bold">Version</p>
-                    <span className="font-mono text-xs text-text-muted">v{app.meta.version}</span>
+                    <p className="text-[10px] font-bold uppercase text-text-muted">Version</p>
+                    <span className="font-mono text-[10px] text-text-muted">v{app.meta.version}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-bold">Category</p>
+                    <p className="text-[10px] font-bold uppercase text-text-muted">Category</p>
                     <select 
                       value={app.meta.category}
                       onChange={(e) => setApp({ ...app, meta: { ...app.meta, category: e.target.value } })}
-                      className="text-xs bg-surface-alt border border-border rounded px-2 py-1 outline-none"
+                      className="text-[10px] bg-surface-alt border border-border rounded px-1 py-0.5 outline-none"
                     >
                       {['Utility', 'Game', 'Productivity', 'Social', 'Education'].map(c => <option key={c}>{c}</option>)}
                     </select>
@@ -226,18 +271,18 @@ export default function EditApp() {
                 <button 
                   type="submit"
                   disabled={saving}
-                  className="w-full h-12 bg-primary text-white rounded-xl font-display font-bold flex items-center justify-center gap-2 hover:bg-primary-dim transition-all disabled:opacity-50"
+                  className="w-full h-11 bg-primary text-white rounded-xl font-display font-bold text-xs flex items-center justify-center gap-2 hover:bg-primary-dim transition-all disabled:opacity-50"
                 >
-                  <Save size={18} /> {saving ? 'Saving...' : 'Save Meta Changes'}
+                  {saving ? 'Saving...' : 'Save Meta Changes'}
                 </button>
 
-                <div className="pt-10">
+                <div className="pt-6">
                   <button 
                     type="button"
                     onClick={handleDelete}
-                    className="w-full h-12 border border-primary/20 text-primary rounded-xl font-display font-bold flex items-center justify-center gap-2 hover:bg-primary/5 transition-all"
+                    className="w-full h-11 border border-primary/20 text-primary rounded-xl font-display font-bold text-xs flex items-center justify-center gap-2 hover:bg-primary/5 transition-all"
                   >
-                    <Trash2 size={18} /> Delete App Permanently
+                    Delete App Permanently
                   </button>
                 </div>
               </div>
@@ -276,6 +321,164 @@ export default function EditApp() {
       </div>
 
       <AnimatePresence>
+        {showManualEditor && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed inset-0 z-[150] bg-bg flex flex-col"
+          >
+            <div className="h-14 flex items-center justify-between px-4 border-b border-border bg-surface shrink-0">
+               <div className="flex items-center gap-3">
+                  <button onClick={() => setShowManualEditor(false)} className="p-2 hover:bg-bg rounded-lg">
+                     <X size={18} />
+                  </button>
+               </div>
+               
+               <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(manualCode);
+                    }}
+                    className="p-2 hover:bg-bg rounded-lg text-text-secondary"
+                    title="Copy Code"
+                  >
+                     <Copy size={18} />
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if(confirm('Clear all code?')) setManualCode('');
+                    }}
+                    className="p-2 hover:bg-bg rounded-lg text-text-secondary"
+                    title="Clear Code"
+                  >
+                     <Eraser size={18} />
+                  </button>
+                  <div className="w-[1px] h-6 bg-border mx-1" />
+                  <button 
+                    onClick={() => setManualEditorTab('preview')}
+                    className={cn(
+                      "p-2 rounded-lg transition-colors",
+                      manualEditorTab === 'preview' ? "bg-primary/10 text-primary" : "hover:bg-bg text-text-secondary"
+                    )}
+                    title="Preview"
+                  >
+                     <Play size={18} />
+                  </button>
+                  <button 
+                    onClick={() => setManualEditorTab('code')}
+                    className={cn(
+                      "p-2 rounded-lg transition-colors",
+                      manualEditorTab === 'code' ? "bg-primary/10 text-primary" : "hover:bg-bg text-text-secondary"
+                    )}
+                    title="Code"
+                  >
+                     <Code size={18} />
+                  </button>
+                  <div className="w-[1px] h-6 bg-border mx-1" />
+                  <button 
+                    onClick={() => setShowDescriptionPrompt(true)}
+                    className="flex items-center justify-center w-10 h-10 bg-primary text-white rounded-lg shadow-lg shadow-primary/20 ml-2"
+                    title="Save Version"
+                  >
+                     <Save size={18} />
+                  </button>
+               </div>
+            </div>
+
+            <div className="flex-1 min-h-0 bg-black relative flex flex-col">
+               {manualEditorTab === 'code' ? (
+                 <>
+                   <textarea 
+                     id="manual-code-textarea"
+                     value={manualCode}
+                     onChange={(e) => setManualCode(e.target.value)}
+                     className="flex-1 w-full p-4 bg-transparent text-gray-300 font-mono text-sm resize-none outline-none focus:ring-0 leading-relaxed"
+                     spellCheck={false}
+                     placeholder="Write your app code here (HTML/JS)..."
+                   />
+                   <div className="h-12 bg-surface shrink-0 border-t border-border flex items-center px-2 gap-1 overflow-x-auto no-scrollbar">
+                      {['<', '>', '/', '=', '"', '{', '}', '[', ']', '(', ')', ';'].map(char => (
+                        <button 
+                          key={char}
+                          onClick={() => {
+                            const textarea = document.getElementById('manual-code-textarea') as HTMLTextAreaElement;
+                            if (!textarea) return;
+                            const start = textarea.selectionStart;
+                            const end = textarea.selectionEnd;
+                            const text = textarea.value;
+                            const before = text.substring(0, start);
+                            const after = text.substring(end, text.length);
+                            setManualCode(before + char + after);
+                            // Set focus back and move cursor
+                            setTimeout(() => {
+                              textarea.focus();
+                              textarea.setSelectionRange(start + 1, start + 1);
+                            }, 0);
+                          }}
+                          className="min-w-[36px] h-9 bg-bg border border-border rounded text-sm font-mono text-primary flex items-center justify-center active:bg-primary/20"
+                        >
+                          {char}
+                        </button>
+                      ))}
+                   </div>
+                 </>
+               ) : (
+                 <iframe 
+                   srcDoc={manualCode}
+                   className="w-full h-full border-none bg-white"
+                   title="Manual Preview"
+                 />
+               )}
+            </div>
+
+            <AnimatePresence>
+              {showDescriptionPrompt && (
+                <>
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 bg-black/60 z-[160]"
+                    onClick={() => setShowDescriptionPrompt(false)}
+                  />
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm bg-surface p-6 rounded-2xl shadow-2xl z-[161] border border-border"
+                  >
+                    <h3 className="font-display font-bold text-lg mb-2">Deploy New Version</h3>
+                    <p className="text-xs text-text-muted mb-4">Briefly describe what changed in this update.</p>
+                    <textarea 
+                      autoFocus
+                      value={versionDescription}
+                      onChange={(e) => setVersionDescription(e.target.value)}
+                      placeholder="e.g. Added user profiles, fixed layout bugs..."
+                      className="w-full h-24 p-3 bg-bg border border-border rounded-xl text-sm outline-none focus:border-primary transition-all mb-4 resize-none"
+                    />
+                    <div className="flex gap-2">
+                       <button 
+                        onClick={() => setShowDescriptionPrompt(false)}
+                        className="flex-1 h-11 border border-border rounded-xl text-sm font-bold"
+                       >
+                          Cancel
+                       </button>
+                       <button 
+                         disabled={!versionDescription || saving}
+                         onClick={() => handleApplyVersion(manualCode, versionDescription)}
+                         className="flex-1 h-11 bg-primary text-white rounded-xl text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50"
+                       >
+                          {saving ? 'Saving...' : 'Deploy Now'}
+                       </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </motion.div>
+        )}
+
         {showAiSheet && (
           <>
             <motion.div 
@@ -364,11 +567,11 @@ export default function EditApp() {
                           Discard Change
                         </button>
                         <button 
-                          onClick={handleApplyVersion}
+                          onClick={() => handleApplyVersion()}
                           disabled={saving}
-                          className="flex-1 h-14 bg-primary text-white rounded-xl font-display font-bold flex items-center justify-center gap-2 shadow-lg hover:translate-y-[-2px] transition-all"
+                          className="flex-1 h-11 bg-primary text-white rounded-xl font-display font-bold text-sm flex items-center justify-center gap-2 shadow-lg hover:translate-y-[-2px] transition-all"
                         >
-                          <Rocket size={18} /> {saving ? 'Deploying...' : 'Deploy Version'}
+                          {saving ? 'Deploying...' : 'Deploy Version'}
                         </button>
                       </div>
                     </div>

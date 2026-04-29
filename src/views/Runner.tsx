@@ -127,6 +127,39 @@ export default function Runner() {
 
   if (loading) return <div className="h-screen bg-black flex items-center justify-center p-12 grow"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"></div></div>;
 
+  if (app?.meta?.status === 'generating') {
+    return (
+      <div className="fixed inset-0 z-[200] bg-bg flex flex-col items-center justify-center p-12 text-center grow">
+         <div className="relative w-24 h-24 mb-8">
+            <div className="absolute inset-0 border-4 border-primary/10 border-t-primary rounded-full animate-spin" />
+            <div className="absolute inset-4 bg-primary/5 rounded-full flex items-center justify-center text-primary">
+               <RefreshCw size={24} className="animate-pulse" />
+            </div>
+         </div>
+         <h2 className="font-display font-bold text-2xl mb-2">Build still ongoing</h2>
+         <p className="text-text-muted max-w-xs mx-auto text-sm mb-8">Gemini is currently writing the final bits of code for {app.meta.name}. Hang tight!</p>
+         <button onClick={() => navigate(-1)} className="px-6 py-2 bg-surface border border-border rounded-lg text-sm font-bold hover:bg-surface-alt transition-all">
+            Go Back
+         </button>
+      </div>
+    );
+  }
+
+  if (app?.meta?.status === 'error') {
+     return (
+        <div className="fixed inset-0 z-[200] bg-bg flex flex-col items-center justify-center p-12 text-center grow">
+           <div className="w-16 h-16 bg-primary/10 text-primary rounded-2xl flex items-center justify-center mb-6">
+              <ArrowLeft size={32} />
+           </div>
+           <h2 className="font-display font-bold text-2xl mb-2">Build Failed</h2>
+           <p className="text-text-muted max-w-xs mx-auto text-sm mb-8">Something went wrong during the generation of {app?.meta?.name}. You can try re-generating or editing it manually.</p>
+           <button onClick={() => navigate(`/edit/${id}`)} className="px-6 py-2 bg-primary text-white rounded-lg text-sm font-bold shadow-lg shadow-primary/20 hover:translate-y-[-1px] transition-all">
+              Go to Editor
+           </button>
+        </div>
+     );
+  }
+
   const sandboxedHtml = app ? buildSandboxedHTML(app.code.html, app.meta.creatorUid, app.id) : '';
 
   return (

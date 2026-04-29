@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Upload, Trash2, File, Image as ImageIcon, Copy, RefreshCw, HardDrive } from 'lucide-react';
 import { DatasetEngine } from '../../lib/dataset-engine';
 import { cn } from '../../lib/utils';

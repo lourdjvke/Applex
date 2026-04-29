@@ -83,6 +83,7 @@ export default function CreateApp() {
         screenshotsBase64: [],
         isPublished: false,
         isOfflineReady: false,
+        status: 'generating',
       },
       stats: { installs: 0, views: 0, avgRating: 0, reviewCount: 0, installedBy: {} },
       code: { html: method === 'manual' ? appCode : '', sizeBytes: method === 'manual' ? new Blob([appCode]).size : 0 },
@@ -100,7 +101,7 @@ export default function CreateApp() {
           const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
           
           const finalName = appName || "AI Generated App";
-          const finalTagline = "A smart mini-app built with AIPLEX AI";
+          const finalTagline = "Ready to use";
           const finalDesc = "This app was generated based on your description using Gemini.";
 
           await dbUpdate(`apps/${draftId}`, {
@@ -108,6 +109,7 @@ export default function CreateApp() {
             'meta/tagline': finalTagline,
             'meta/description': finalDesc,
             'meta/iconBase64': finalIcon,
+            'meta/status': 'ready',
             'code/html': code,
             'code/sizeBytes': new Blob([code]).size,
             'meta/updatedAt': Date.now()
@@ -115,11 +117,14 @@ export default function CreateApp() {
         } catch (err) {
           console.error('Background generation failed', err);
           await dbUpdate(`apps/${draftId}`, {
-            'meta/tagline': 'Generation failed. Edit to fix.',
+            'meta/tagline': 'Generation failed.',
+            'meta/status': 'error'
           });
         }
       })();
     } else {
+       // if manual, it's ready immediately
+       await dbUpdate(`apps/${draftId}`, { 'meta/status': 'ready' });
        // if manual and no icon, can generate an icon optionally or just leave default
        if (!appIcon) {
           (async () => {
