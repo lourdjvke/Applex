@@ -239,6 +239,12 @@ export default function Runner() {
              className="w-full h-full border-none"
              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
              srcDoc={sandboxedHtml}
+             onLoad={(e) => {
+               const iframe = e.target as HTMLIFrameElement;
+               if (!iframe.contentDocument?.body.innerHTML.trim()) {
+                 console.error("Iframe loaded but is blank.");
+               }
+             }}
            />
         </div>
       </div>

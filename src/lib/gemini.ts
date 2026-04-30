@@ -134,17 +134,41 @@ RULES FOR AI APP GENERATION
 
 export async function analyzeNativeVideo(file: File) {
     try {
-        // 1. Upload the file to Google's servers
-        const uploadResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${API_KEY}`, {
+        // 1. Start the resumable upload
+        const startResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${API_KEY}`, {
             method: 'POST',
             headers: { 
-              'X-Goog-Upload-Command': 'start, upload, finalize', 
-              'X-Goog-Upload-Protocol': 'resumable', 
-              'Content-Type': file.type 
+              'X-Goog-Upload-Protocol': 'resumable',
+              'X-Goog-Upload-Command': 'start', 
+              'X-Goog-Upload-Header-Content-Length': file.size.toString(),
+              'X-Goog-Upload-Header-Content-Type': file.type,
+              'Content-Type': 'application/json' 
+            },
+            body: JSON.stringify({ file: { display_name: file.name } })
+        });
+        
+        if (!startResponse.ok) {
+          const errText = await startResponse.text();
+          console.error("Upload start failed. Status:", startResponse.status, "Response:", errText);
+          return null;
+        }
+
+        const uploadUrl = startResponse.headers.get('X-Goog-Upload-URL');
+        if (!uploadUrl) {
+          console.error("No upload URL returned. Headers:", startResponse.headers);
+          return null;
+        }
+
+        // 2. Upload the exact bytes
+        const uploadResponse = await fetch(uploadUrl, {
+            method: 'POST',
+            headers: {
+              'X-Goog-Upload-Command': 'upload, finalize',
+              'X-Goog-Upload-Offset': '0'
             },
             body: file
         });
-        
+
         if (!uploadResponse.ok) {
           const err = await uploadResponse.text();
           console.error("Upload failed", err);
@@ -154,7 +178,7 @@ export async function analyzeNativeVideo(file: File) {
         const uploadResult = await uploadResponse.json();
         const fileUri = uploadResult.file.uri;
 
-        // 2. Use the SDK to analyze
+        // 3. Use the SDK to analyze
         const response = await ai.models.generateContent({
           model: GEMINI_PRO_MODEL,
           contents: [{

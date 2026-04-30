@@ -26,6 +26,14 @@ export interface AppNotification {
   isRead: boolean;
 }
 
+export interface AppVersion {
+  id: string;
+  version: string;
+  htmlCode: string;
+  summary: string;
+  createdAt: number;
+}
+
 export interface MiniApp {
   id: string;
   meta: {

@@ -73,7 +73,7 @@ export default function AuthTab({ creatorUid, appId }: { creatorUid: string; app
                <div key={u.authUserId} className="grid grid-cols-4 px-4 py-4 items-center hover:bg-surface-alt transition-colors grow">
                   <div className="flex items-center gap-3">
                      <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-xs">
-                        {u.displayName?.[0] || u.email[0].toUpperCase()}
+                        {u.displayName?.[0]?.toUpperCase() || u.email?.[0]?.toUpperCase() || '?'}
                      </div>
                      <div className="flex flex-col truncate">
                         <span className="text-sm font-semibold truncate">{u.displayName || 'No Name'}</span>

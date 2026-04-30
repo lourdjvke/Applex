@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Sparkles, ChevronUp, Check, X, Rocket, RefreshCcw, Bell, Trash2, Code, Copy, Eraser, Play } from 'lucide-react';
 import { dbGet, dbUpdate, dbSet, dbRemove } from '../lib/firebase';
-import { MiniApp, AppNotification } from '../types';
+import { AppVersion, MiniApp, AppNotification } from '../types';
 import { useAuth } from '../lib/AuthContext';
 import { editAppCode, generateUpdateSummary } from '../lib/gemini';
 import { motion, AnimatePresence } from 'motion/react';
@@ -10,6 +10,7 @@ import { cn, generateId } from '../lib/utils';
 import DatasetTab from '../components/studio/DatasetTab';
 import StorageTab from '../components/studio/StorageTab';
 import AuthTab from '../components/studio/AuthTab';
+import HistoryTab from '../components/studio/HistoryTab';
 
 export default function EditApp() {
   const { id } = useParams<{ id: string }>();
@@ -21,7 +22,7 @@ export default function EditApp() {
   const [editingCode, setEditingCode] = useState(false);
   const [previewCode, setPreviewCode] = useState<string | null>(null);
   const [updateSummary, setUpdateSummary] = useState('');
-  const [activeTab, setActiveTab] = useState<'details' | 'dataset' | 'storage' | 'auth'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'dataset' | 'storage' | 'auth' | 'history'>('details');
   const [showManualEditor, setShowManualEditor] = useState(false);
   const [manualCode, setManualCode] = useState('');
   const [manualEditorTab, setManualEditorTab] = useState<'code' | 'preview'>('code');
@@ -64,7 +65,7 @@ export default function EditApp() {
     }
   };
 
-  const handleDelete = async () => {
+   const handleDelete = async () => {
     if (!id || !app) return;
     if (confirm(`Are you sure you want to PERMANENTLY DELETE ${app.meta.name}? This cannot be undone.`)) {
       setSaving(true);
@@ -72,6 +73,23 @@ export default function EditApp() {
       navigate('/studio');
     }
   };
+
+  const handleRevert = async (version: AppVersion) => {
+     if (!app || !id) return;
+     if(!confirm(`Revert to v${version.version}?`)) return;
+     setSaving(true);
+     const updates = {
+       'meta/version': version.version,
+       'meta/updatedAt': Date.now(),
+       'meta/updateSummary': `Reverted to v${version.version}: ${version.summary}`,
+       'code/html': version.htmlCode,
+       'code/sizeBytes': new Blob([version.htmlCode]).size
+     };
+     await dbUpdate(`apps/${id}`, updates);
+     setApp({ ...app, meta: { ...app.meta, version: version.version }, code: { ...app.code, html: version.htmlCode } });
+     setSaving(false);
+     alert('Reverted successfully!');
+   };
 
   const handleApplyVersion = async (codeToApply?: string, summaryToApply?: string) => {
     const finalCode = codeToApply || previewCode;
@@ -83,6 +101,16 @@ export default function EditApp() {
     const oldVersion = app.meta.version;
     const parts = oldVersion.split('.');
     const newVersion = `${parts[0]}.${parseInt(parts[1]) + 1}.0`;
+    
+    // Save version history
+    const versionEntry: AppVersion = {
+      id: generateId(),
+      version: newVersion,
+      htmlCode: finalCode,
+      summary: finalSummary,
+      createdAt: Date.now()
+    };
+    await dbSet(`apps/${id}/versions/${versionEntry.id}`, versionEntry);
 
     const updates = {
       'meta/version': newVersion,
@@ -161,7 +189,8 @@ export default function EditApp() {
            { id: 'details', label: 'App Details' },
            { id: 'dataset', label: 'Dataset' },
            { id: 'storage', label: 'Storage' },
-           { id: 'auth', label: 'Auth Users' }
+           { id: 'auth', label: 'Auth Users' },
+           { id: 'history', label: 'History' }
          ].map(t => (
            <button 
              key={t.id}
@@ -317,6 +346,10 @@ export default function EditApp() {
 
         {activeTab === 'auth' && user && (
           <AuthTab creatorUid={user.uid} appId={id || ''} />
+        )}
+        
+        {activeTab === 'history' && (
+          <HistoryTab appId={id || ''} onVersionSelect={handleRevert} />
         )}
       </div>
 

@@ -95,31 +95,41 @@ export default function CreateApp() {
     // Fire and forget background generation IF NEEDED
     if (method !== 'manual') {
       (async () => {
-        try {
-          const code = await generateMiniApp(prompt, context);
-          const generatedSvgPath = await generateAppIcon(appName || 'My App', prompt);
-          const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
-          
-          const finalName = appName || "AI Generated App";
-          const finalTagline = "Ready to use";
-          const finalDesc = "This app was generated based on your description using Gemini.";
+        let retries = 2;
+        while (retries > 0) {
+          try {
+            const code = await generateMiniApp(prompt, context);
+            const generatedSvgPath = await generateAppIcon(appName || 'My App', prompt);
+            const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
+            
+            const finalName = appName || "AI Generated App";
+            const finalTagline = "Ready to use";
+            const finalDesc = "This app was generated based on your description using Gemini.";
 
-          await dbUpdate(`apps/${draftId}`, {
-            'meta/name': finalName,
-            'meta/tagline': finalTagline,
-            'meta/description': finalDesc,
-            'meta/iconBase64': finalIcon,
-            'meta/status': 'ready',
-            'code/html': code,
-            'code/sizeBytes': new Blob([code]).size,
-            'meta/updatedAt': Date.now()
-          });
-        } catch (err) {
-          console.error('Background generation failed', err);
-          await dbUpdate(`apps/${draftId}`, {
-            'meta/tagline': 'Generation failed.',
-            'meta/status': 'error'
-          });
+            await dbUpdate(`apps/${draftId}`, {
+              'meta/name': finalName,
+              'meta/tagline': finalTagline,
+              'meta/description': finalDesc,
+              'meta/iconBase64': finalIcon,
+              'meta/status': 'ready',
+              'code/html': code,
+              'code/sizeBytes': new Blob([code]).size,
+              'meta/updatedAt': Date.now()
+            });
+            break; // Success
+          } catch (err: any) {
+            retries--;
+            if (retries === 0) {
+              console.error('Background generation failed', err);
+              await dbUpdate(`apps/${draftId}`, {
+                'meta/tagline': err?.message?.includes('xhr') ? 'Network timeout. Try editing code.' : 'Generation failed.',
+                'meta/status': 'error'
+              });
+            } else {
+              console.log('Generation failed, retrying...', err);
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          }
         }
       })();
     } else {

@@ -100,13 +100,17 @@ export function generateBridgeScript(ownerUid: string, appId: string) {
  */
 export function buildSandboxedHTML(rawHtml: string, ownerUid: string, appId: string) {
   const bridge = generateBridgeScript(ownerUid, appId);
-  const scriptTag = `<script id="aiplex-bridge">${bridge}</script>`;
+  const headExtras = `
+    <meta http-equiv="Cache-Control" content="max-age=3600">
+    <link rel="preload" href="https://cdn.tailwindcss.com" as="script" crossorigin="anonymous">
+    <script id="aiplex-bridge">${bridge}</script>
+  `;
   
   if (rawHtml.includes('<head>')) {
-    return rawHtml.replace('<head>', `<head>\n${scriptTag}`);
+    return rawHtml.replace('<head>', `<head>\n${headExtras}`);
   }
   if (rawHtml.includes('<body>')) {
-    return rawHtml.replace('<body>', `<body>\n${scriptTag}`);
+    return rawHtml.replace('<body>', `<body>\n${headExtras}`);
   }
-  return `${scriptTag}\n${rawHtml}`;
+  return `${headExtras}\n${rawHtml}`;
 }
