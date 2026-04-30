@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Sparkles, ChevronUp, Check, X, Rocket, RefreshCcw, Bell, Trash2, Code, Copy, Eraser, Play } from 'lucide-react';
 import { dbGet, dbUpdate, dbSet, dbRemove } from '../lib/firebase';
-import { AppVersion, MiniApp, AppNotification } from '../types';
+import { AppVersion, MiniApp, AppNotification, ProjectSpec } from '../types';
 import { useAuth } from '../lib/AuthContext';
 import { editAppCode, generateUpdateSummary } from '../lib/gemini';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn, generateId } from '../lib/utils';
+import { cn, generateId, extractScreenComponents } from '../lib/utils';
 import DatasetTab from '../components/studio/DatasetTab';
 import StorageTab from '../components/studio/StorageTab';
 import AuthTab from '../components/studio/AuthTab';
@@ -28,6 +28,8 @@ export default function EditApp() {
   const [manualEditorTab, setManualEditorTab] = useState<'code' | 'preview'>('code');
   const [showDescriptionPrompt, setShowDescriptionPrompt] = useState(false);
   const [versionDescription, setVersionDescription] = useState('');
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const [pageCodes, setPageCodes] = useState<Record<string, string>>({});
   
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -36,7 +38,14 @@ export default function EditApp() {
     async function fetchData() {
       if (!id) return;
       const data = await dbGet<MiniApp>(`apps/${id}`);
-      if (data) setApp(data);
+      if (data) {
+        setApp(data);
+        if (data.code.pages) {
+          setPageCodes(data.code.pages);
+          const firstPageId = data.projectSpec?.pages[0]?.id || Object.keys(data.code.pages)[0];
+          setSelectedPageId(firstPageId);
+        }
+      }
       setLoading(false);
     }
     fetchData();
@@ -54,8 +63,9 @@ export default function EditApp() {
     if (!app || !aiPrompt) return;
     setEditingCode(true);
     try {
-      const newCode = await editAppCode(app.code.html, aiPrompt);
-      const summary = await generateUpdateSummary(app.code.html, newCode, aiPrompt);
+      const sourceCode = selectedPageId ? pageCodes[selectedPageId] : app.code.html;
+      const newCode = await editAppCode(sourceCode, aiPrompt);
+      const summary = await generateUpdateSummary(sourceCode, newCode, aiPrompt);
       setPreviewCode(newCode);
       setUpdateSummary(summary);
     } catch (err) {
@@ -98,15 +108,54 @@ export default function EditApp() {
     if (!app || !id || !finalCode || !user) return;
     setSaving(true);
     
+    let updatedHtml = '';
+    let updatedPageCodes = { ...pageCodes };
+
+    if (selectedPageId) {
+      // Rebuild consolidated HTML
+      updatedPageCodes[selectedPageId] = finalCode;
+      
+      let registrationScript = '';
+      if (app.projectSpec) {
+        for (const page of app.projectSpec.pages) {
+          const pageSrc = updatedPageCodes[page.id];
+          const { template, scripts } = extractScreenComponents(pageSrc);
+          registrationScript += `
+          AIPLEX.app.registerScreen('${page.id}', {
+            template: \`${template.replace(/`/g, '\\`').replace(/\${/g, '\\${')}\`,
+            async onInit() {
+              try {
+                ${scripts}
+              } catch(e) { console.error('Error in ${page.id} onInit:', e); }
+            }
+          });`;
+        }
+        
+        const firstPageId = app.projectSpec.pages[0].id;
+        updatedHtml = `
+        <div id="screen-container" class="min-h-screen"></div>
+        <script>
+          window.addEventListener('load', () => {
+            const init = async () => {
+              ${registrationScript}
+              AIPLEX.app.navigate('${firstPageId}');
+            };
+            init();
+          });
+        </script>`;
+      }
+    } else {
+      updatedHtml = finalCode;
+    }
+
     const oldVersion = app.meta.version;
     const parts = oldVersion.split('.');
     const newVersion = `${parts[0]}.${parseInt(parts[1]) + 1}.0`;
     
-    // Save version history
     const versionEntry: AppVersion = {
       id: generateId(),
       version: newVersion,
-      htmlCode: finalCode,
+      htmlCode: updatedHtml,
       summary: finalSummary,
       createdAt: Date.now()
     };
@@ -116,12 +165,14 @@ export default function EditApp() {
       'meta/version': newVersion,
       'meta/updatedAt': Date.now(),
       'meta/updateSummary': finalSummary,
-      'code/html': finalCode,
-      'code/sizeBytes': new Blob([finalCode]).size
+      'code/html': updatedHtml,
+      'code/pages': updatedPageCodes,
+      'code/sizeBytes': new Blob([updatedHtml]).size
     };
 
     await dbUpdate(`apps/${id}`, updates);
 
+    // Update notifications if any users installed it
     if (app.stats.installedBy) {
       const uids = Object.keys(app.stats.installedBy);
       const notification: AppNotification = {
@@ -141,7 +192,12 @@ export default function EditApp() {
       }
     }
 
-    setApp({ ...app, meta: { ...app.meta, version: newVersion, updateSummary: finalSummary }, code: { ...app.code, html: finalCode } });
+    setApp({ 
+      ...app, 
+      meta: { ...app.meta, version: newVersion, updateSummary: finalSummary }, 
+      code: { ...app.code, html: updatedHtml, pages: updatedPageCodes } 
+    });
+    setPageCodes(updatedPageCodes);
     setPreviewCode(null);
     setShowAiSheet(false);
     setShowManualEditor(false);
@@ -207,31 +263,69 @@ export default function EditApp() {
 
       <div className="max-w-5xl mx-auto p-6 grow">
         {activeTab === 'details' && (
-          <div className="space-y-10 grow">
-            <div className="flex flex-wrap items-center gap-3 bg-surface p-4 rounded-2xl border border-border mb-6">
-               <div className="flex-1">
-                  <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-1">Versioning</h3>
-                  <p className="text-[10px] text-text-muted">Create a new app version using AI or manual code.</p>
-               </div>
-               <button 
-                 onClick={() => setShowAiSheet(true)}
-                 className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-xl text-xs font-bold hover:bg-primary/20 transition-all shrink-0"
-               >
-                  <Sparkles size={14} /> AI Versioning
-               </button>
-               <button 
-                 onClick={() => {
-                   setManualCode(app.code.html);
-                   setShowManualEditor(true);
-                 }}
-                 className="flex items-center gap-2 px-4 py-2 bg-surface-alt border border-border text-text-secondary rounded-xl text-xs font-bold hover:bg-surface transition-all shrink-0"
-               >
-                  <Code size={14} /> New Version
-               </button>
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 grow">
+            <div className="lg:col-span-8 space-y-10 grow">
+              {app.projectSpec && (
+                <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
+                  <div className="bg-surface-alt px-6 py-3 border-b border-border flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted">App Architecture: Screens</h3>
+                    <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-bold">Multi-Page App</span>
+                  </div>
+                  <div className="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {app.projectSpec.pages.map(page => (
+                      <button 
+                        key={page.id}
+                        onClick={() => setSelectedPageId(page.id)}
+                        className={cn(
+                          "flex items-center gap-3 p-3 rounded-xl border transition-all text-left group grow",
+                          selectedPageId === page.id 
+                            ? "bg-primary/5 border-primary shadow-sm" 
+                            : "bg-bg border-border hover:border-text-muted"
+                        )}
+                      >
+                         <div className={cn(
+                           "w-10 h-10 rounded-lg flex items-center justify-center shrink-0 transition-all",
+                           selectedPageId === page.id ? "bg-primary text-white" : "bg-surface-alt text-text-muted"
+                         )}>
+                            <Play size={18} fill={selectedPageId === page.id ? "currentColor" : "none"} />
+                         </div>
+                         <div className="min-w-0">
+                            <p className="text-sm font-bold truncate">{page.name}</p>
+                            <p className="text-[10px] text-text-muted truncate">{page.description}</p>
+                         </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-            <form onSubmit={handleBasicSave} className="grid grid-cols-1 md:grid-cols-3 gap-10 grow">
-              <div className="md:col-span-1 space-y-6">
+              <div className="flex flex-wrap items-center gap-3 bg-surface p-4 rounded-2xl border border-border grow">
+                 <div className="flex-1">
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-text-muted mb-1">
+                      Editing: <span className="text-primary">{selectedPageId ? `Page "${app.projectSpec?.pages.find(p => p.id === selectedPageId)?.name}"` : 'Global App'}</span>
+                    </h3>
+                    <p className="text-[10px] text-text-muted">Create a new version for {selectedPageId ? 'this screen' : 'the entire app'}.</p>
+                 </div>
+                 <button 
+                   onClick={() => setShowAiSheet(true)}
+                   className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-xl text-xs font-bold hover:bg-primary/20 transition-all shrink-0"
+                 >
+                    <Sparkles size={14} /> AI Edit {selectedPageId ? 'Screen' : 'App'}
+                 </button>
+                 <button 
+                   onClick={() => {
+                     const code = selectedPageId ? pageCodes[selectedPageId] : app.code.html;
+                     setManualCode(code || '');
+                     setShowManualEditor(true);
+                   }}
+                   className="flex items-center gap-2 px-4 py-2 bg-surface-alt border border-border text-text-secondary rounded-xl text-xs font-bold hover:bg-surface transition-all shrink-0"
+                 >
+                    <Code size={14} /> Manual Edit
+                 </button>
+              </div>
+
+              <form onSubmit={handleBasicSave} className="grid grid-cols-1 md:grid-cols-3 gap-10 grow">
+                <div className="md:col-span-1 space-y-6">
                 <div className="relative group">
                   <img src={app.meta.iconBase64} className="w-32 h-32 rounded-3xl border border-border shadow-md object-cover grow" alt={app.meta.name} />
                   <button type="button" className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-3xl transition-opacity text-white text-xs font-bold">
@@ -334,7 +428,8 @@ export default function EditApp() {
               </div>
             </section>
           </div>
-        )}
+        </div>
+      )}
 
         {activeTab === 'dataset' && user && (
           <DatasetTab creatorUid={user.uid} appId={id || ''} />

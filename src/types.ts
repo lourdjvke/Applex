@@ -99,7 +99,9 @@ export interface MiniApp {
   code: {
     html: string;
     sizeBytes: number;
+    pages?: Record<string, string>;
   };
+  projectSpec?: ProjectSpec;
 }
 
 export interface Review {

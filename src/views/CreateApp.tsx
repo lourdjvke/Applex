@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Wand2, Type, Video, ImageIcon, Sparkles, Check, ChevronRight, Rocket, RefreshCcw, FileVideo, FileCode, X } from 'lucide-react';
-import { MiniApp, AppNotification, ProjectSpec, GenerationTask, AppVersion } from '../types';
+import { MiniApp, AppNotification, ProjectSpec, GenerationTask, AppVersion, ProjectPage } from '../types';
 import { analyzeMultiImages, generateMiniApp, generateAppIcon, analyzeCodeForMetadata } from '../lib/gemini';
 import { dbPush, dbSet, dbUpdate, dbGet } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
-import { fileToBase64, generateId } from '../lib/utils';
+import { fileToBase64, generateId, extractScreenComponents } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
@@ -99,7 +99,12 @@ export default function CreateApp() {
         status: 'generating',
       },
       stats: { installs: 0, views: 0, avgRating: 0, reviewCount: 0, installedBy: {} },
-      code: { html: method === 'manual' ? appCode : '', sizeBytes: method === 'manual' ? new Blob([appCode]).size : 0 },
+      code: { 
+        html: method === 'manual' ? appCode : '', 
+        sizeBytes: method === 'manual' ? new Blob([appCode]).size : 0, 
+        pages: {} 
+      },
+      projectSpec: projectSpec || undefined
     };
 
     await dbSet(`apps/${appId}`, draftData);
@@ -108,26 +113,48 @@ export default function CreateApp() {
       (async () => {
         try {
           let finalCode = '';
+          const pageSources: Record<string, string> = {};
+
           if (isMultiPage && projectSpec) {
-            // Multi-page progressive generation
-            let combinedCode = '';
+            let registrationScript = '';
             for (let i = 0; i < projectSpec.pages.length; i++) {
               setCurrentGenerationPageIndex(i);
               const page = projectSpec.pages[i];
               const pagePrompt = `APP VISION:\n${projectSpec.appDescription}\n\nPAGE SPECIFIC PROMPT:\n${page.prompt}\n\nTECHNICAL SPEC:\nColors: ${JSON.stringify(projectSpec.techSpecs.colors)}\nFonts: ${projectSpec.techSpecs.fonts}`;
               
-              // Find the specific reference image for this page if it exists
               const pageImages = page.referenceImageIndex !== null && uploadedImages[page.referenceImageIndex] 
                 ? [uploadedImages[page.referenceImageIndex]] 
                 : uploadedImages;
 
               const pageCode = await generateMiniApp(pagePrompt, JSON.stringify(projectSpec), pageImages);
-              // Integration logic: Wrap in a semantic tag for AppShell
-              combinedCode += `<div id="screen-${page.id}" data-aiplex-screen="${page.id}">\n${pageCode}\n</div>\n`;
+              pageSources[page.id] = pageCode;
+              
+              const { template, scripts } = extractScreenComponents(pageCode);
+              
+              registrationScript += `
+              AIPLEX.app.registerScreen('${page.id}', {
+                template: \`${template.replace(/`/g, '\\`').replace(/\${/g, '\\${')}\`,
+                async onInit() {
+                  try {
+                    ${scripts}
+                  } catch(e) { console.error('Error in ${page.id} onInit:', e); }
+                }
+              });`;
             }
-            finalCode = combinedCode;
+            
+            const firstPageId = projectSpec.pages[0].id;
+            finalCode = `
+            <div id="screen-container" class="min-h-screen"></div>
+            <script>
+              window.addEventListener('load', () => {
+                const init = async () => {
+                  ${registrationScript}
+                  AIPLEX.app.navigate('${firstPageId}');
+                };
+                init();
+              });
+            </script>`;
           } else {
-            // Single page
             finalCode = await generateMiniApp(prompt, context, uploadedImages);
           }
 
@@ -138,6 +165,7 @@ export default function CreateApp() {
             'meta/status': 'ready',
             'meta/iconBase64': finalIcon,
             'code/html': finalCode,
+            'code/pages': pageSources,
             'code/sizeBytes': new Blob([finalCode]).size,
             'meta/updatedAt': Date.now()
           });
