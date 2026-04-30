@@ -32,6 +32,42 @@ export interface AppVersion {
   htmlCode: string;
   summary: string;
   createdAt: number;
+  sourceType?: 'image-to-prompt' | 'manual-edit';
+  promptSnapshot?: string;
+  imageRefs?: string[];
+}
+
+export interface ProjectPage {
+  id: string;
+  name: string;
+  description: string;
+  components: string[];
+  needsAuth: boolean;
+  referenceImageIndex: number | null;
+  prompt: string;
+}
+
+export interface ProjectSpec {
+  appName: string;
+  appDescription: string;
+  primaryColor: string;
+  theme: 'light' | 'dark';
+  pages: ProjectPage[];
+  sharedComponents: string[];
+  globalState: Record<string, any>;
+}
+
+export interface GenerationTask {
+  taskId: string;
+  appId: string;
+  status: 'queued' | 'generating' | 'complete' | 'error';
+  totalPages: number;
+  completedPages: string[];
+  currentPage: string;
+  pageStatuses: Record<string, 'pending' | 'generating' | 'generated' | 'error'>;
+  createdAt: number;
+  updatedAt: number;
+  error?: string;
 }
 
 export interface MiniApp {

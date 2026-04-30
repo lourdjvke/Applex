@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Wand2, Type, Video, ImageIcon, Sparkles, Check, ChevronRight, Rocket, RefreshCcw, FileVideo, FileCode } from 'lucide-react';
-import { generateMiniApp, analyzeVideoOrImage, analyzeNativeVideo, generateAppIcon, analyzeCodeForMetadata } from '../lib/gemini';
-import { dbPush, dbSet, dbUpdate } from '../lib/firebase';
+import { Wand2, Type, Video, ImageIcon, Sparkles, Check, ChevronRight, Rocket, RefreshCcw, FileVideo, FileCode, X } from 'lucide-react';
+import { MiniApp, AppNotification, ProjectSpec, GenerationTask, AppVersion } from '../types';
+import { analyzeMultiImages, generateMiniApp, generateAppIcon, analyzeCodeForMetadata } from '../lib/gemini';
+import { dbPush, dbSet, dbUpdate, dbGet } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { fileToBase64, generateId } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
-type Step = 'describe' | 'generate' | 'publish';
+type Step = 'describe' | 'spec' | 'generate' | 'publish';
 
 export default function CreateApp() {
   const [step, setStep] = useState<Step>('describe');
@@ -17,6 +18,11 @@ export default function CreateApp() {
   const [context, setContext] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [isMultiPage, setIsMultiPage] = useState(false);
+  const [uploadedImages, setUploadedImages] = useState<{data: string, mimeType: string}[]>([]);
+  const [projectSpec, setProjectSpec] = useState<ProjectSpec | null>(null);
+  const [currentGenerationPageIndex, setCurrentGenerationPageIndex] = useState(0);
+  const [currentTask, setCurrentTask] = useState<GenerationTask | null>(null);
   
   // Generated data
   const [appName, setAppName] = useState('');
@@ -30,26 +36,34 @@ export default function CreateApp() {
   const navigate = useNavigate();
 
   const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
     setAnalyzing(true);
     try {
-      let analysis;
-      if (file.type.startsWith('video/')) {
-        analysis = await analyzeNativeVideo(file);
+      const images = await Promise.all(files.map(async (f: File) => ({
+        data: await fileToBase64(f),
+        mimeType: f.type
+      })));
+      
+      const newImages = [...uploadedImages, ...images].slice(0, 5);
+      setUploadedImages(newImages);
+      
+      if (isMultiPage) {
+        // Multi-page flow: Analyze all images to get a project spec
+        // We use the 'context' field for additional instructions if provided
+        const spec = await analyzeMultiImages(newImages, context || prompt);
+        if (spec) {
+          setProjectSpec(spec);
+          setAppName(spec.appName);
+          setAppDescription(spec.appDescription);
+          setStep('spec');
+        }
       } else {
-        const base64 = await fileToBase64(file);
-        analysis = await analyzeVideoOrImage(base64, file.type);
+        // Single-page flow
+        setPrompt(context || prompt || "Generate an app based on these images.");
+        setMethod('text');
       }
-
-      if (analysis) {
-        setAppName(analysis.suggestedName);
-        setAppDescription(analysis.description);
-        setPrompt(analysis.description);
-        setContext(analysis.detailedAnalysis || analysis.description);
-      }
-      setMethod('text'); // Switch to text to show results
     } catch (err) {
       console.error(err);
     } finally {
@@ -58,29 +72,28 @@ export default function CreateApp() {
   };
 
   const handleGenerate = async () => {
-    if ((method !== 'manual' && !prompt) || !user) return;
-    if (method === 'manual' && (!appCode || !appName)) {
-        alert('Please provide code and a name');
-        return;
-    }
+    if ((method !== 'manual' && !prompt && !projectSpec) || !user) return;
+    
+    const appId = generateId();
+    const taskId = generateId();
+    
     setGenerating(true);
     setStep('generate');
 
-    const draftId = generateId();
-    const draftData = {
-      id: draftId,
+    const draftData: MiniApp = {
+      id: appId,
       meta: {
-        name: appName || "AI Draft App",
-        tagline: appTagline || "Generating...",
-        description: prompt || appDescription || "Manual build",
+        name: appName || (projectSpec?.appName) || "AI Draft App",
+        tagline: "Generating...",
+        description: appDescription || (projectSpec?.appDescription) || prompt || "Manual build",
         category: appCategory,
-        tags: ['draft'],
+        tags: isMultiPage ? ['multi-page'] : ['single-page'],
         creatorUid: user.uid,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         version: '0.1.0',
-        iconBase64: appIcon || 'https://cdn-icons-png.flaticon.com/512/2103/2103633.png',
-        screenshotsBase64: [],
+        iconBase64: appIcon || 'https://cdn-icons-png.flaticon.com/512/2101/2101655.png',
+        screenshotsBase64: uploadedImages.map(img => img.data),
         isPublished: false,
         isOfflineReady: false,
         status: 'generating',
@@ -89,62 +102,50 @@ export default function CreateApp() {
       code: { html: method === 'manual' ? appCode : '', sizeBytes: method === 'manual' ? new Blob([appCode]).size : 0 },
     };
 
-    // Save draft immediately
-    await dbSet(`apps/${draftId}`, draftData);
+    await dbSet(`apps/${appId}`, draftData);
 
-    // Fire and forget background generation IF NEEDED
     if (method !== 'manual') {
       (async () => {
-        let retries = 2;
-        while (retries > 0) {
-          try {
-            const code = await generateMiniApp(prompt, context);
-            const generatedSvgPath = await generateAppIcon(appName || 'My App', prompt);
-            const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
-            
-            const finalName = appName || "AI Generated App";
-            const finalTagline = "Ready to use";
-            const finalDesc = "This app was generated based on your description using Gemini.";
+        try {
+          let finalCode = '';
+          if (isMultiPage && projectSpec) {
+            // Multi-page progressive generation
+            let combinedCode = '';
+            for (let i = 0; i < projectSpec.pages.length; i++) {
+              setCurrentGenerationPageIndex(i);
+              const page = projectSpec.pages[i];
+              const pagePrompt = `APP VISION:\n${projectSpec.appDescription}\n\nPAGE SPECIFIC PROMPT:\n${page.prompt}\n\nTECHNICAL SPEC:\nColors: ${JSON.stringify(projectSpec.techSpecs.colors)}\nFonts: ${projectSpec.techSpecs.fonts}`;
+              
+              // Find the specific reference image for this page if it exists
+              const pageImages = page.referenceImageIndex !== null && uploadedImages[page.referenceImageIndex] 
+                ? [uploadedImages[page.referenceImageIndex]] 
+                : uploadedImages;
 
-            await dbUpdate(`apps/${draftId}`, {
-              'meta/name': finalName,
-              'meta/tagline': finalTagline,
-              'meta/description': finalDesc,
-              'meta/iconBase64': finalIcon,
-              'meta/status': 'ready',
-              'code/html': code,
-              'code/sizeBytes': new Blob([code]).size,
-              'meta/updatedAt': Date.now()
-            });
-            break; // Success
-          } catch (err: any) {
-            retries--;
-            if (retries === 0) {
-              console.error('Background generation failed', err);
-              await dbUpdate(`apps/${draftId}`, {
-                'meta/tagline': err?.message?.includes('xhr') ? 'Network timeout. Try editing code.' : 'Generation failed.',
-                'meta/status': 'error'
-              });
-            } else {
-              console.log('Generation failed, retrying...', err);
-              await new Promise(r => setTimeout(r, 2000));
+              const pageCode = await generateMiniApp(pagePrompt, JSON.stringify(projectSpec), pageImages);
+              // Integration logic: Wrap in a semantic tag for AppShell
+              combinedCode += `<div id="screen-${page.id}" data-aiplex-screen="${page.id}">\n${pageCode}\n</div>\n`;
             }
+            finalCode = combinedCode;
+          } else {
+            // Single page
+            finalCode = await generateMiniApp(prompt, context, uploadedImages);
           }
+
+          const generatedSvgPath = await generateAppIcon(draftData.meta.name, draftData.meta.description);
+          const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
+
+          await dbUpdate(`apps/${appId}`, {
+            'meta/status': 'ready',
+            'meta/iconBase64': finalIcon,
+            'code/html': finalCode,
+            'code/sizeBytes': new Blob([finalCode]).size,
+            'meta/updatedAt': Date.now()
+          });
+        } catch (err) {
+          console.error(err);
+          await dbUpdate(`apps/${appId}`, { 'meta/status': 'error' });
         }
       })();
-    } else {
-       // if manual, it's ready immediately
-       await dbUpdate(`apps/${draftId}`, { 'meta/status': 'ready' });
-       // if manual and no icon, can generate an icon optionally or just leave default
-       if (!appIcon) {
-          (async () => {
-             try {
-                const generatedSvgPath = await generateAppIcon(appName, prompt || appDescription || 'A mini app');
-                const finalIcon = `data:image/svg+xml;base64,${btoa(generatedSvgPath)}`;
-                await dbUpdate(`apps/${draftId}`, { 'meta/iconBase64': finalIcon });
-             } catch (err) { }
-          })();
-       }
     }
 
     navigate('/studio');
@@ -160,35 +161,36 @@ export default function CreateApp() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 pb-20 grow">
+    <div className="max-w-4xl mx-auto px-4 pb-20 pt-10 min-h-full">
       {/* Header */}
-      <div className="text-center py-12">
-        <h1 className="font-display font-extrabold text-3xl mb-2">Create New App</h1>
-        <p className="text-text-muted">Turn your idea into a functional mini-app in seconds.</p>
+      <div className="text-center py-16">
+        <h1 className="font-display font-extrabold text-4xl mb-4 tracking-tight">Create Your App</h1>
+        <p className="text-text-muted text-lg max-w-xl mx-auto">Gemini will architect and code your functional mini-app from scratch.</p>
       </div>
 
       {/* Steps */}
-      <div className="flex items-center justify-center gap-4 mb-12 relative cursor-default">
-         <div className="absolute top-1/2 left-0 w-full h-px bg-border -z-10 -translate-y-1/2"></div>
+      <div className="flex items-center justify-center gap-6 mb-20 relative cursor-default">
+         <div className="absolute top-1/2 left-0 w-full h-px bg-border/50 -z-10 -translate-y-1/2"></div>
          {[
            { id: 'describe', label: 'Describe', icon: Type },
+           { id: 'spec', label: 'Spec', icon: Sparkles },
            { id: 'generate', label: 'Generate', icon: Wand2 },
            { id: 'publish', label: 'Publish', icon: Rocket }
          ].map((s, idx) => (
             <div 
               key={s.id} 
               className={cn(
-                "flex flex-col items-center gap-2 px-6 bg-bg transition-all",
-                step === s.id ? "text-primary" : "text-text-muted"
+                "flex flex-col items-center gap-3 px-8 bg-bg transition-all",
+                step === s.id ? "text-primary opacity-100" : "text-text-muted opacity-60"
               )}
             >
                <div className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all",
-                  step === s.id ? "border-primary bg-primary/10" : "border-border bg-surface"
+                  "w-12 h-12 rounded-2xl flex items-center justify-center border-2 transition-all shadow-sm",
+                  step === s.id ? "border-primary bg-primary/10 scale-110 shadow-primary/10" : "border-border bg-surface"
                )}>
-                  <s.icon size={18} />
+                  <s.icon size={20} />
                </div>
-               <span className="text-[10px] font-bold uppercase tracking-widest">{s.label}</span>
+               <span className="text-[10px] font-bold uppercase tracking-[0.2em]">{s.label}</span>
             </div>
          ))}
       </div>
@@ -202,7 +204,25 @@ export default function CreateApp() {
             exit={{ opacity: 0, y: -20 }}
             className="space-y-8 grow"
           >
-            <div className="bg-surface rounded-2xl border border-border p-1 flex gap-1 shadow-sm">
+             <div className="flex items-center justify-between gap-4 mb-4">
+               <h2 className="font-display font-bold text-lg">App Type</h2>
+               <div className="flex bg-surface rounded-full p-1 border border-border">
+                  <button 
+                    onClick={() => setIsMultiPage(false)}
+                    className={cn("px-4 py-1.5 rounded-full text-xs font-bold transition-all", !isMultiPage ? "bg-primary text-white" : "text-text-muted")}
+                  >
+                    Single Page
+                  </button>
+                  <button 
+                    onClick={() => setIsMultiPage(true)}
+                    className={cn("px-4 py-1.5 rounded-full text-xs font-bold transition-all", isMultiPage ? "bg-primary text-white" : "text-text-muted")}
+                  >
+                    Multi Page
+                  </button>
+               </div>
+             </div>
+
+             <div className="bg-surface rounded-2xl border border-border p-1 flex gap-1 shadow-sm">
                <button 
                  onClick={() => setMethod('text')}
                  className={cn("flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all", method === 'text' ? "bg-primary text-white shadow-md shadow-primary/20" : "text-text-secondary hover:bg-surface-alt")}
@@ -213,7 +233,7 @@ export default function CreateApp() {
                  onClick={() => setMethod('media')}
                  className={cn("flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all", method === 'media' ? "bg-primary text-white shadow-md shadow-primary/20" : "text-text-secondary hover:bg-surface-alt")}
                >
-                 <Video size={18} /> Video / Image
+                 <ImageIcon size={18} /> Images
                </button>
                <button 
                  onClick={() => setMethod('manual')}
@@ -343,24 +363,53 @@ export default function CreateApp() {
                 </div>
               </div>
             ) : (
-              <div className="bg-surface-alt border-2 border-dashed border-border rounded-2xl p-12 text-center grow">
-                {analyzing ? (
-                  <div className="space-y-4">
-                    <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto"></div>
-                    <p className="font-display font-bold">Analyzing media...</p>
-                    <p className="text-xs text-text-muted">Gemini is extracting UI patterns and features.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="w-16 h-16 bg-white border border-border rounded-2xl flex items-center justify-center mx-auto text-text-muted mb-4">
-                       <Video size={32} />
+              <div className="space-y-6 grow">
+                <div className="space-y-4">
+                  <label className="text-xs font-bold uppercase text-text-muted tracking-widest">Additional Instructions (Optional)</label>
+                  <textarea 
+                    value={context}
+                    onChange={(e) => setContext(e.target.value)}
+                    placeholder="e.g. Do not make it mockup but use aiplex dataset, auth and storage and add custom authentication screen..."
+                    className="w-full h-32 bg-surface border border-border rounded-xl p-4 text-sm outline-none focus:border-primary transition-all resize-none"
+                  />
+                </div>
+
+                <div className="bg-surface-alt border-2 border-dashed border-border rounded-2xl p-8 text-center">
+                  {analyzing ? (
+                    <div className="space-y-4">
+                      <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto"></div>
+                      <p className="font-display font-bold">Analyzing {isMultiPage ? 'Screens' : 'Media'}...</p>
                     </div>
-                    <h3 className="font-display font-bold text-lg">Upload Example Clip</h3>
-                    <p className="text-sm text-text-muted max-w-xs mx-auto">Show AI what you want to build by uploading another app's recording or mockup.</p>
-                    <label className="block pt-4">
-                       <span className="bg-primary text-white px-6 py-3 rounded-xl font-display font-bold text-sm cursor-pointer hover:bg-primary-dim transition-all inline-block">Choose File</span>
-                       <input type="file" className="hidden" accept="video/*,image/*" onChange={handleMediaUpload} />
-                    </label>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="w-16 h-16 bg-white border border-border rounded-2xl flex items-center justify-center mx-auto text-text-muted mb-4">
+                         <ImageIcon size={32} />
+                      </div>
+                      <h3 className="font-display font-bold text-lg">Upload {isMultiPage ? '1-5 Screens' : 'Example Image'}</h3>
+                      <p className="text-sm text-text-muted max-w-xs mx-auto">
+                        {isMultiPage ? 'Upload screenshots of each page you want to build.' : 'Upload a mockup image and AI will recreate it.'}
+                      </p>
+                      <label className="block pt-4">
+                         <span className="bg-primary text-white px-6 py-3 rounded-xl font-display font-bold text-sm cursor-pointer hover:bg-primary-dim transition-all inline-block">Choose Images</span>
+                         <input type="file" className="hidden" accept="image/*" multiple={isMultiPage} onChange={handleMediaUpload} />
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {uploadedImages.length > 0 && (
+                  <div className="flex gap-4 overflow-x-auto pb-4 pt-2">
+                    {uploadedImages.map((img, idx) => (
+                      <div key={idx} className="relative w-24 h-40 rounded-lg overflow-hidden border border-border shrink-0 group shadow-md hover:shadow-lg transition-all">
+                        <img src={img.data} className="w-full h-full object-cover" />
+                        <button 
+                          onClick={() => setUploadedImages(prev => prev.filter((_, i) => i !== idx))}
+                          className="absolute top-1 right-1 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-md transition-opacity"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -376,101 +425,107 @@ export default function CreateApp() {
           </motion.div>
         )}
 
+        {step === 'spec' && projectSpec && (
+          <motion.div 
+            key="spec"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-8 grow"
+          >
+            <div className="bg-surface border border-border rounded-3xl p-8 space-y-6 shadow-xl">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+                  <Rocket size={24} />
+                </div>
+                <div>
+                  <h2 className="font-display font-bold text-xl">Confirm Project Architecture</h2>
+                  <p className="text-xs text-text-muted">Review the multi-page plan before starting generation.</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-bold text-text-muted tracking-widest">Global App Vision</label>
+                <textarea 
+                  value={projectSpec.appDescription}
+                  onChange={(e) => setProjectSpec({ ...projectSpec, appDescription: e.target.value })}
+                  className="w-full h-32 bg-surface-alt rounded-2xl p-4 text-sm focus:outline-none focus:ring-2 ring-primary resize-none"
+                />
+              </div>
+
+              <div className="space-y-4">
+                <label className="text-[10px] uppercase font-bold text-text-muted tracking-widest">Planned Pages ({projectSpec.pages.length})</label>
+                <div className="space-y-3">
+                  {projectSpec.pages.map((page, idx) => (
+                    <div key={page.id} className="bg-surface-alt border border-border rounded-2xl p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className="w-6 h-6 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">{idx + 1}</span>
+                          <span className="font-bold text-sm">{page.name}</span>
+                        </div>
+                        {page.referenceImageIndex !== null && (
+                          <div className="w-8 h-12 rounded border border-border overflow-hidden">
+                            <img src={uploadedImages[page.referenceImageIndex].data} className="w-full h-full object-cover" />
+                          </div>
+                        )}
+                      </div>
+                      <textarea 
+                        value={page.prompt}
+                        onChange={(e) => {
+                          const newPages = [...projectSpec.pages];
+                          newPages[idx].prompt = e.target.value;
+                          setProjectSpec({ ...projectSpec, pages: newPages });
+                        }}
+                        className="w-full h-24 bg-surface rounded-xl p-3 text-xs focus:outline-none focus:ring-1 ring-primary resize-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button 
+                onClick={handleGenerate}
+                className="w-full h-16 bg-primary text-white rounded-2xl font-display font-bold text-lg flex items-center justify-center gap-3 shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                Proceed to Generation <ChevronRight size={20} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+
         {step === 'generate' && (
           <motion.div 
             key="generate"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="space-y-10 grow"
+             initial={{ opacity: 0, scale: 0.95 }}
+             animate={{ opacity: 1, scale: 1 }}
+             className="flex flex-col items-center justify-center p-12 text-center grow"
           >
-            {generating ? (
-              <div className="text-center py-20 space-y-12 shrink-0">
-                <div className="relative w-32 h-32 mx-auto">
-                   <motion.div 
-                     animate={{ rotate: 360 }}
-                     transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
-                     className="absolute inset-0 border-4 border-primary/10 border-t-primary rounded-full"
-                   />
-                   <div className="absolute inset-4 bg-primary/5 rounded-full flex items-center justify-center text-primary">
-                      <Sparkles size={40} className="animate-pulse" />
-                   </div>
+             <div className="relative w-32 h-32 mb-8">
+                <div className="absolute inset-0 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
+                <div className="absolute inset-4 bg-primary/5 rounded-full flex items-center justify-center text-primary">
+                   <Sparkles size={32} className="animate-pulse" />
                 </div>
-                <div className="space-y-2">
-                   <h3 className="font-display font-bold text-2xl">Building your mini-app...</h3>
-                   <p className="text-text-muted">Gemini is writing the code and designing the assets.</p>
-                </div>
-                <div className="max-w-xs mx-auto space-y-3">
-                   {['Understanding layout...', 'Generating logic...', 'Styling components...', 'Finalizing build...'].map((t, i) => (
-                      <div key={i} className="flex items-center gap-3 text-xs font-mono text-text-muted">
-                         <div className="w-1.5 h-1.5 rounded-full bg-primary/30"></div>
-                         <span>{t}</span>
+             </div>
+             <h2 className="font-display font-bold text-2xl mb-2">Generating your app...</h2>
+             <p className="text-text-muted max-w-sm mx-auto text-sm">
+                {isMultiPage ? 'Gemini is constructing each screen from the architecture plan.' : 'Gemini is coding your interface and logic.'}
+             </p>
+             
+             {isMultiPage && projectSpec && (
+               <div className="mt-8 w-full max-w-md space-y-3">
+                 {projectSpec.pages.map((p, idx) => (
+                   <div key={p.id} className="flex items-center gap-3 bg-surface p-3 rounded-xl border border-border">
+                      <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all", 
+                         idx < currentGenerationPageIndex ? "bg-green-500 text-white" : 
+                         idx === currentGenerationPageIndex ? "bg-primary text-white animate-pulse" : 
+                         "bg-surface-alt text-text-muted")}>
+                        {idx < currentGenerationPageIndex ? <Check size={12} /> : idx + 1}
                       </div>
-                   ))}
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 grow">
-                 <div className="space-y-6">
-                    <div className="bg-surface rounded-2xl border border-border p-8 grow">
-                       <h3 className="font-display font-bold text-xl mb-6 flex items-center gap-2">
-                          <Sparkles size={20} className="text-primary" /> Visual Identity
-                       </h3>
-                       <div className="flex items-center gap-6 mb-8 grow">
-                          <img src={appIcon} className="w-20 h-20 rounded-2xl shadow-lg border border-border shrink-0" alt="Generated Icon" />
-                          <div className="space-y-2 flex-grow min-w-0">
-                             <input 
-                               value={appName}
-                               onChange={(e) => setAppName(e.target.value)}
-                               className="w-full font-display font-bold text-xl outline-none focus:border-b border-primary truncate bg-transparent"
-                             />
-                             <input 
-                               value={appTagline}
-                               onChange={(e) => setAppTagline(e.target.value)}
-                               className="w-full text-xs text-text-muted outline-none focus:border-b border-primary truncate bg-transparent"
-                             />
-                          </div>
-                       </div>
-                       
-                       <div className="space-y-2">
-                          <label className="text-[10px] uppercase font-bold text-text-muted">Description</label>
-                          <textarea 
-                             value={appDescription}
-                             onChange={(e) => setAppDescription(e.target.value)}
-                             className="w-full h-32 bg-surface-alt rounded-lg p-3 text-sm focus:outline-none focus:ring-1 ring-primary"
-                          />
-                       </div>
-                    </div>
-                    
-                    <button 
-                      onClick={() => setStep('publish')}
-                      className="w-full h-14 bg-primary text-white rounded-xl font-display font-bold flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-95 transition-all"
-                    >
-                       Continue to Publish <Check size={20} />
-                    </button>
-                    <button 
-                      onClick={handleGenerate}
-                      className="w-full h-14 bg-surface border border-border text-text-secondary rounded-xl font-display font-bold flex items-center justify-center gap-2 hover:bg-surface-alt transition-all"
-                    >
-                       <RefreshCcw size={18} /> Re-generate
-                    </button>
-                 </div>
-
-                 <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                       <h3 className="font-display font-bold">App Preview</h3>
-                       <span className="text-[10px] font-mono text-text-muted italic">Running in simulator</span>
-                    </div>
-                    <div className="aspect-[9/16] bg-black rounded-[40px] p-4 border-[8px] border-text-primary shadow-2xl relative grow overflow-hidden">
-                       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-text-primary rounded-b-2xl z-10"></div>
-                       <iframe 
-                         title="Preview"
-                         srcDoc={appCode}
-                         className="w-full h-full bg-white rounded-2xl border-none"
-                       />
-                    </div>
-                 </div>
-              </div>
-            )}
+                      <span className="text-sm font-semibold">{p.name}</span>
+                      {idx === currentGenerationPageIndex && <span className="ml-auto text-[10px] text-primary font-bold uppercase tracking-widest animate-pulse">Building</span>}
+                   </div>
+                 ))}
+               </div>
+             )}
           </motion.div>
         )}
 

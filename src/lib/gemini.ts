@@ -6,237 +6,165 @@ const ai = new GoogleGenAI({ apiKey: API_KEY });
 const GEMINI_MODEL = "gemini-flash-latest"; 
 const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview";
 
+function extractJSON(text: string): string {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end > start) {
+    return text.substring(start, end + 1);
+  }
+  return text;
+}
+
+function extractHTML(text: string): string {
+  // Try to find code block first
+  const match = text.match(/```html\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/);
+  if (match) return match[1].trim();
+  
+  // If no markdown, try to find DOCTYPE or <html>
+  const lower = text.toLowerCase();
+  const startIdx = Math.max(lower.indexOf('<!doctype'), lower.indexOf('<html'));
+  if (startIdx !== -1) {
+    const endIdx = lower.lastIndexOf('</html>');
+    if (endIdx !== -1) return text.substring(startIdx, endIdx + 7);
+    return text.substring(startIdx);
+  }
+  return text.trim();
+}
+
 const AIPLEX_API_CONTEXT = `
 AIPLEX PLATFORM CONTEXT — READ CAREFULLY:
 
 You are generating a mini-app that will run inside the AIPLEX platform. The platform
-injects a global object ` + "`window.AIPLEX`" + ` before your app code runs. You have access to
-a real-time Firebase database, a base64 file storage system, and a full authentication
-system — all scoped to this app.
-
-NEW: This platform has native OFFLINE-FIRST support. 
-- AIPLEX.dataset.read() and getAll() automatically cache data locally for offline viewing.
-- AIPLEX.dataset.write() and delete() queue changes while offline and sync automatically when online.
-- AIPLEX.auth.verify() works offline if a session was previously active.
-- AIPLEX.auth.logout() handles session termination correctly.
-- AIPLEX.storage.read() caches files locally after the first fetch.
-
-Use these freely to build apps that work everywhere!
+injects a global object \`window.AIPLEX\` before your app code runs.
 
 ═══════════════════════════════════════════════════════════════
-AIPLEX DATASET API — IDENTICAL TO FIREBASE REALTIME DATABASE
+AIPLEX MULTI-PAGE MINI-APP ARCHITECTURE — GENERATION RULES
 ═══════════════════════════════════════════════════════════════
 
-The AIPLEX platform gives your mini-app a real-time database that works
-exactly like Firebase Realtime Database. You access it via window.AIPLEX.dataset.
-The database is a single JSON tree. Paths are slash or dot separated strings.
+You are generating a complete, multi-page mini-app for the AIPLEX platform.
+The app uses a client-side navigation shell with the <open> tag for page
+transitions. You must generate the FULL app HTML including the shell, all
+screen definitions, and all shared components.
 
-CRITICAL RULE — NO DUPLICATION:
-Writing to a path that already has data UPDATES it. It never creates a duplicate.
-The path IS the identity. "users/uid_jacob" is one node. Always. You cannot have two.
+APP SHELL REQUIREMENTS:
+1. Define a <main id="screen-container"> for screen rendering.
+2. Include a persistent bottom navigation bar with <open> tags linking
+   to all main screens. Active screen is highlighted with class "active".
+3. All screens must use AppShell.registerScreen('name', { template, onInit, onEnter, onExit }).
+4. The home screen must be registered and navigated to on app start.
+5. Use smooth, GPU-accelerated CSS transitions between screens (200ms ease-out).
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<open> TAG USAGE:
+<open target="screenName">Link Text</open>
+<open target="screenName" params="key=value&key2=value2">Link</open>
+<open target="back">Go Back</open>
 
-WRITE:
-  await AIPLEX.dataset.set('path/to/key', value)
-  await AIPLEX.dataset.update('path/to/object', { key: val })  // non-destructive merge
-  const id = await AIPLEX.dataset.push('path/to/list', value) // auto push key
+- target="back" triggers history.back().
+- params are passed to onEnter(params) as an object.
+- The <open> tag must be styled as a tappable element (min 44x44px).
 
-READ:
-  const val = await AIPLEX.dataset.get('path/to/key')
-  // Returns the value (string, number, boolean, object) or null if not found
-  // Getting an object path returns the full nested object
-
-LIVE:
-  const unsub = AIPLEX.dataset.on('path', (value) => { ... })
-  const unsub = AIPLEX.dataset.onChildAdded('path', (child, key) => { ... })
-  unsub() // stop listening
-
-DELETE:
-  await AIPLEX.dataset.remove('path/to/key') // removes node and all children
-
-UTILS:
-  const id = AIPLEX.dataset.newId()          // unique push key
-  const yes = await AIPLEX.dataset.exists('path') // true | false
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-═══════════════════════════════════════════════
-STORAGE API — Base64 file storage
-═══════════════════════════════════════════════
-
-// Save an image (pass full base64 data URI)
-await AIPLEX.storage.write('avatar.png', dataUri, 'image/png');
-
-// Retrieve a file — returns base64 data URI, use directly as <img src>
-const src = await AIPLEX.storage.read('avatar.png');
-document.querySelector('#avatar').src = src;
-
-// Delete a file
-await AIPLEX.storage.delete('avatar.png');
-
-// List all files
-const files = await AIPLEX.storage.list();
-// → [{ id: 'avatar.png', mimeType: 'image/png', sizeBytes: 12400, createdAt: 1234567 }]
-
-To store user-uploaded images: use FileReader to get base64, then storage.write().
-
-═══════════════════════════════════════════════
-AUTH API — Per-app user authentication
-═══════════════════════════════════════════════
-
-// Sign up a new user
-const user = await AIPLEX.auth.signup(email, password, displayName, { role: 'player' });
-// → { authUserId, token, email, displayName }
-// Store token in localStorage for session persistence
-
-// Log in
-const user = await AIPLEX.auth.login(email, password);
-// → { authUserId, token, email, displayName }
-
-// Verify a stored token (call on app load to restore session)
-const session = await AIPLEX.auth.verify(localStorage.getItem('token'));
-if (!session) { showLoginScreen(); }
-
-// Log out
-await AIPLEX.auth.logout(localStorage.getItem('token'));
-localStorage.removeItem('token');
-
-// Update user profile
-await AIPLEX.auth.updateUser(authUserId, { displayName: 'New Name', metadata: { score: 99 } });
-
-// Delete a user
-await AIPLEX.auth.deleteUser(authUserId);
-
-// List all users (admin use)
-const users = await AIPLEX.auth.listUsers();
-
-IMPORTANT: Passwords are hashed with SHA-256 client-side before storage.
-Never store or transmit raw passwords.
-Sessions expire after 24 hours. Always check verify() on app load.
-
-═══════════════════════════════════════════════
-RULES FOR AI APP GENERATION
-═══════════════════════════════════════════════
-
-1. ALL state that should persist must use AIPLEX.dataset.write — never rely on localStorage
-   alone for data that should survive across users or devices.
-2. Use AIPLEX.auth for any app that has the concept of users, profiles, or login.
-3. Use AIPLEX.storage for any user-uploaded images or binary data.
-4. All AIPLEX API calls are async — always use await or .then().
-5. The app must be a SINGLE self-contained HTML file. No external JS files.
-6. CDN libraries are allowed (e.g. from cdnjs.cloudflare.com).
-7. Always design mobile-first. The iframe viewport is ~390px wide on mobile.
-8. Add a loading state shown while async operations are in progress.
-9. Handle errors from AIPLEX calls gracefully — show user-friendly messages.
-10. AIPLEX.context.appId and AIPLEX.context.ownerUid are available if needed.
-`;
-
-export async function analyzeNativeVideo(file: File) {
-    try {
-        // 1. Start the resumable upload
-        const startResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${API_KEY}`, {
-            method: 'POST',
-            headers: { 
-              'X-Goog-Upload-Protocol': 'resumable',
-              'X-Goog-Upload-Command': 'start', 
-              'X-Goog-Upload-Header-Content-Length': file.size.toString(),
-              'X-Goog-Upload-Header-Content-Type': file.type,
-              'Content-Type': 'application/json' 
-            },
-            body: JSON.stringify({ file: { display_name: file.name } })
-        });
-        
-        if (!startResponse.ok) {
-          const errText = await startResponse.text();
-          console.error("Upload start failed. Status:", startResponse.status, "Response:", errText);
-          return null;
-        }
-
-        const uploadUrl = startResponse.headers.get('X-Goog-Upload-URL');
-        if (!uploadUrl) {
-          console.error("No upload URL returned. Headers:", startResponse.headers);
-          return null;
-        }
-
-        // 2. Upload the exact bytes
-        const uploadResponse = await fetch(uploadUrl, {
-            method: 'POST',
-            headers: {
-              'X-Goog-Upload-Command': 'upload, finalize',
-              'X-Goog-Upload-Offset': '0'
-            },
-            body: file
-        });
-
-        if (!uploadResponse.ok) {
-          const err = await uploadResponse.text();
-          console.error("Upload failed", err);
-          return null;
-        }
-
-        const uploadResult = await uploadResponse.json();
-        const fileUri = uploadResult.file.uri;
-
-        // 3. Use the SDK to analyze
-        const response = await ai.models.generateContent({
-          model: GEMINI_PRO_MODEL,
-          contents: [{
-            parts: [
-              { text: `
-                Watch this video and provide an EXHAUSTIVE, high-fidelity technical specification for the app interface shown. 
-                Your response MUST be a masterclass in UI/UX reverse-engineering.
-                
-                CRITICAL REQUIREMENT: The "description" field in the JSON MUST contain a massive, dense, actionable detail of NO LESS THAN 1200 WORDS. This is non-negotiable. Do not summarize in the description. The description field MUST contain the full 1200+ word specification.
-                
-                Break down every single atom of the design inside the "description" field:
-                - TYPOGRAPHY: Identify font families (or closest web-safe/Google Font equivalents), weights (e.g., 400, 600, 700), line-heights, letter-spacing, and responsive font-size scales for every heading and body element.
-                - COLOR PALETTE: Provide exact Hex codes for primary, secondary, background, surface, error, and success states. Describe gradient stops, opacity levels, and color theory used (e.g., monochromatic, complementary).
-                - LAYOUT & SPACING: Define the grid system (columns/gutters), flexbox configurations, exact padding/margin scales (in px/rem), and max-widths for all containers.
-                - VISUAL DEPTH: Document box-shadow values (offset, blur, spread, color), border-radii, and backdrop-filters (blur/saturation).
-                - INTERACTIVE LOGIC & TRANSITIONS: Describe every transition duration, easing function (e.g., cubic-bezier), hover effects, active states, and complex interaction logic (e.g., "when button X is clicked, container Y slides in from the left with a bounce effect").
-                - ASSETS & ICONOGRAPHY: Describe the style of icons (line vs solid), stroke widths, and provide descriptions for any custom illustrations.
-                - FUNCTIONAL SPEC: Outline the precise logic for data handling, state management, and edge cases.
-
-                The goal is to provide a blueprint so perfect that an expert developer can recreate the app 1:1 without ever seeing the video.
-                
-                Return a JSON object: { 
-                  "appType": "...", 
-                  "description": "YOUR 1200+ WORD EXHAUSTIVE SPECIFICATION GOES HERE", 
-                  "features": [...], 
-                  "suggestedName": "...", 
-                  "suggestedTags": [...],
-                  "techSpecs": {
-                    "colors": [...],
-                    "fonts": "..."
-                  }
-                }
-              ` },
-              { 
-                fileData: { 
-                  mimeType: file.type, 
-                  fileUri: fileUri 
-                } 
-              }
-            ]
-          }]
-        });
-
-        const text = (response.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(text);
-    } catch (e) {
-      console.error("Video analysis error", e);
-      return null;
-    }
+SCREEN LIFECYCLE:
+Each screen object:
+{
+  template: \`HTML string\`,
+  async onInit() { /* called once, setup data listeners */ },
+  async onEnter(params) { /* called every time screen is shown */ },
+  onExit() { /* save state, clean up */ }
 }
 
-export async function generateMiniApp(prompt: string, context?: string) {
+DATASET API — Real-time Firebase-like database (window.AIPLEX.dataset):
+  await AIPLEX.dataset.set('path', value)
+  await AIPLEX.dataset.update('path', { key: val })
+  const id = await AIPLEX.dataset.push('path', value)
+  const val = await AIPLEX.dataset.get('path')
+  const unsub = AIPLEX.dataset.on('path', (value) => { ... })
+  await AIPLEX.dataset.remove('path')
+
+STORAGE API — Base64 file storage (window.AIPLEX.storage):
+  await AIPLEX.storage.write('id.png', dataUri, 'image/png')
+  const src = await AIPLEX.storage.read('id.png')
+
+AUTH API — Per-app user authentication (window.AIPLEX.auth):
+  const user = await AIPLEX.auth.signup(email, password, name)
+  const user = await AIPLEX.auth.login(email, password)
+  const session = await AIPLEX.auth.verify(token)
+
+APP NAV API (window.AIPLEX.app):
+  AIPLEX.app.navigate(target, params)
+
+1. ALL persistent state must use AIPLEX.dataset.
+2. The app must be a SINGLE self-contained HTML file.
+`;
+
+export async function analyzeMultiImages(images: { data: string, mimeType: string }[], userPrompt: string) {
+  const prompt = `
+    Analyze these ${images.length} interface images and provide a cohesive, multi-page technical specification for the app.
+    
+    User description/context: "${userPrompt}"
+    
+    CRITICAL REQUIREMENT: 
+    1. The "appDescription" MUST be a massive, exhaustive masterclass in technical specification (min 2100 words). 
+    2. EACH page in the "pages" array MUST have a "prompt" field that is NO LESS THAN 1500 words of dense, actionable instructions covering typography, color logic, exact layout metrics, and sophisticated functional behavior.
+    3. The overall architecture must use the AIPLEX Multi-Page API (<open> tags and AppShell).
+
+    Return a JSON object: {
+      "appName": "...",
+      "appDescription": "EXTREMELY DETAILED SPEC (2100+ words)...",
+      "primaryColor": "#...",
+      "theme": "light" | "dark",
+      "techSpecs": {
+        "colors": [...],
+        "fonts": "..."
+      },
+      "pages": [
+        {
+          "id": "home",
+          "name": "...",
+          "description": "...",
+          "components": [...],
+          "needsAuth": true,
+          "referenceImageIndex": 0,
+          "prompt": "EXTREMELY DETAILED PAGE PROMPT (1500+ words)..."
+        }
+      ],
+      "sharedComponents": [...],
+      "globalState": {}
+    }
+  `;
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_PRO_MODEL,
+    contents: {
+      parts: [
+        { text: prompt },
+        ...images.map(img => ({
+          inlineData: {
+            data: img.data.split(',')[1] || img.data,
+            mimeType: img.mimeType
+          }
+        }))
+      ]
+    }
+  });
+
+  const text = extractJSON(response.text || '');
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Failed to parse Gemini response as JSON", text);
+    return null;
+  }
+}
+
+export async function generateMiniApp(prompt: string, context?: string, images?: { data: string, mimeType: string }[]) {
   const fullPrompt = `
     You are an expert mobile-first web developer. 
     ${AIPLEX_API_CONTEXT}
     Create a complete, self-contained HTML file (including CSS and JavaScript in the same file) for a mini-app based on this idea: "${prompt}".
     ${context ? `Detailed Technical Specs from Analysis: ${context}` : ''}
     
+    ${images && images.length > 0 ? "REFER TO THE ATTACHED IMAGES FOR VISUAL STYLE, LAYOUT, AND UI PATTERNS. Recreate them as accurately as possible while adapting to the functional requirements." : ""}
+
     Requirements:
     - Fully functional and interactive.
     - Mobile-responsive design with professional polish.
@@ -249,14 +177,25 @@ export async function generateMiniApp(prompt: string, context?: string) {
     Return ONLY the raw HTML code starting with <!DOCTYPE html>. Do not include markdown code blocks or explanations.
   `;
 
+  const contents: any[] = [{ role: 'user', parts: [{ text: fullPrompt }] }];
+  
+  if (images && images.length > 0) {
+    images.forEach(img => {
+      contents[0].parts.push({
+        inlineData: {
+          data: img.data.split(',')[1] || img.data,
+          mimeType: img.mimeType
+        }
+      });
+    });
+  }
+
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
-    contents: fullPrompt
+    contents
   });
 
-  let text = response.text || '';
-  text = text.replace(/```html/g, '').replace(/```/g, '').trim();
-  return text;
+  return extractHTML(response.text || '');
 }
 
 export async function editAppCode(currentCode: string, editDescription: string) {
@@ -277,9 +216,7 @@ export async function editAppCode(currentCode: string, editDescription: string) 
     contents: prompt
   });
 
-  let text = response.text || '';
-  text = text.replace(/```html/g, '').replace(/```/g, '').trim();
-  return text;
+  return extractHTML(response.text || '');
 }
 
 export async function generateUpdateSummary(oldCode: string, newCode: string, editDescription: string) {
@@ -343,7 +280,7 @@ export async function analyzeVideoOrImage(base64Data: string, mimeType: string) 
     }
   });
 
-  const text = (response.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
+  const text = extractJSON(response.text || '');
   try {
     return JSON.parse(text);
   } catch (e) {
@@ -372,7 +309,7 @@ export async function analyzeCodeForMetadata(code: string) {
     contents: prompt
   });
 
-  const text = (response.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
+  const text = extractJSON(response.text || '');
   try {
     return JSON.parse(text);
   } catch (e) {
@@ -388,7 +325,7 @@ export async function generateAppIcon(appName: string, appDescription: string) {
     contents: prompt
   });
 
-  let text = response.text || '';
-  text = text.replace(/```svg/g, '').replace(/```xml/g, '').replace(/```/g, '').trim();
-  return text;
+  const match = (response.text || '').match(/```(?:svg|xml)?\s*([\s\S]*?)```/);
+  if (match) return match[1].trim();
+  return (response.text || '').trim();
 }
